@@ -1,10 +1,10 @@
 from datetime import datetime
 
-from implementation.block import Block, proof_of_work
-from implementation.blockchain import Blockchain
-from implementation.hashing import sha256_block_hash
-from implementation.transaction import Transaction
-from implementation.utils.constants import GENESIS_PREVIOUS_HASH
+from core.block import Block, proof_of_work
+from core.blockchain import Blockchain
+from core.hashing import sha256_block_hash
+from core.transaction import Transaction
+from core.utils.constants import GENESIS_PREVIOUS_HASH
 
 
 def main() -> None:

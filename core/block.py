@@ -1,7 +1,7 @@
 from dataclasses import dataclass, field
 from typing import Callable
 
-from implementation.transaction import Transaction
+from core.transaction import Transaction
 
 
 @dataclass

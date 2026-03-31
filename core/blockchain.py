@@ -1,10 +1,10 @@
 from dataclasses import dataclass, field
 from typing import Callable
 
-from implementation.block import Block, proof_of_work, verify_block
-from implementation.transaction import Transaction
-from implementation.utils.chain import get_previous_hash
-from implementation.utils.mining import (
+from core.block import Block, proof_of_work, verify_block
+from core.transaction import Transaction
+from core.utils.chain import get_previous_hash
+from core.utils.mining import (
     create_mining_reward_transaction,
     is_mining_reward_transaction,
     validate_mining_reward_transaction,

@@ -1,4 +1,4 @@
-from implementation.utils.constants import GENESIS_PREVIOUS_HASH
+from core.utils.constants import GENESIS_PREVIOUS_HASH
 
 
 def get_previous_hash(blocks: list) -> str:

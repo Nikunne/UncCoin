@@ -1,8 +1,8 @@
 from datetime import datetime
 
-from implementation.block import Block
-from implementation.transaction import Transaction
-from implementation.utils.constants import MINING_REWARD_AMOUNT, MINING_REWARD_SENDER
+from core.block import Block
+from core.transaction import Transaction
+from core.utils.constants import MINING_REWARD_AMOUNT, MINING_REWARD_SENDER
 
 
 def create_mining_reward_transaction(miner_address: str) -> Transaction:
