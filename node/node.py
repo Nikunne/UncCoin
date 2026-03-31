@@ -33,6 +33,8 @@ class Node:
             port=self.port,
             on_transaction=self._handle_incoming_transaction,
             on_block=self._handle_incoming_block,
+            on_chain_request=self._handle_chain_request,
+            on_chain_response=self._handle_chain_response,
         )
 
     async def start(self) -> None:
@@ -50,6 +52,7 @@ class Node:
 
     async def connect_to_peer(self, host: str, port: int) -> None:
         await self.p2p_server.connect_to_peer(host, port)
+        await self.p2p_server.request_chain(host, port)
 
     async def broadcast(self, message: dict) -> None:
         await self.p2p_server.broadcast(message)
@@ -250,6 +253,26 @@ class Node:
             return False
 
         return self.blockchain.add_block(block)
+
+    def _handle_chain_request(self) -> list[Block]:
+        if self.blockchain is None:
+            return []
+        return self.blockchain.blocks
+
+    def _handle_chain_response(self, blocks: list[Block]) -> None:
+        if self.blockchain is None:
+            return
+
+        accepted_blocks = 0
+        for block in blocks:
+            if block.block_hash in self.blockchain.blocks_by_hash:
+                continue
+            if self.blockchain.add_block(block):
+                accepted_blocks += 1
+            else:
+                print(f"Rejected synced block {block.block_hash[:12]}")
+
+        print(f"Synchronized {accepted_blocks} block(s) from peer.")
 
     def _ensure_genesis_block(self) -> None:
         if self.blockchain is None or self.blockchain.blocks_by_hash:

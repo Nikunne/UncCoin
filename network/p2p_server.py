@@ -21,6 +21,8 @@ class P2PServer:
     port: int
     on_transaction: Callable[[Transaction], bool] | None = None
     on_block: Callable[[Block], bool] | None = None
+    on_chain_request: Callable[[], list[Block]] | None = None
+    on_chain_response: Callable[[list[Block]], None] | None = None
     peers: set[PeerAddress] = field(default_factory=set)
     seen_transaction_ids: set[str] = field(default_factory=set)
     seen_block_hashes: set[str] = field(default_factory=set)
@@ -146,6 +148,9 @@ class P2PServer:
     async def request_peer_list(self, host: str, port: int) -> None:
         await self.send_to_peer(host, port, {"type": "peer_request"})
 
+    async def request_chain(self, host: str, port: int) -> None:
+        await self.send_to_peer(host, port, {"type": "chain_request"})
+
     async def discover_peers(self) -> None:
         for peer in list(self.active_connections):
             await self.request_peer_list(peer.host, peer.port)
@@ -234,6 +239,21 @@ class P2PServer:
             print(f"Peer list received from {peer.host}:{peer.port}")
             return peer
 
+        if message_type == "chain_request":
+            await self._send_chain(peer)
+            print(f"Chain requested by {peer.host}:{peer.port}")
+            return peer
+
+        if message_type == "chain_response":
+            blocks = [
+                Block.from_dict(block_data, hash_function=sha256_block_hash)
+                for block_data in message.get("blocks", [])
+            ]
+            if self.on_chain_response is not None:
+                self.on_chain_response(blocks)
+            print(f"Chain received from {peer.host}:{peer.port} ({len(blocks)} blocks)")
+            return peer
+
         if message_type == "transaction":
             transaction = Transaction.from_dict(message["transaction"])
             transaction_id = message.get("tx_id", sha256_transaction_hash(transaction))
@@ -291,6 +311,17 @@ class P2PServer:
                     for known_peer in self.peers
                     if not self._is_self_peer(known_peer)
                 ],
+            },
+        )
+
+    async def _send_chain(self, peer: PeerAddress) -> None:
+        blocks = self.on_chain_request() if self.on_chain_request is not None else []
+        await self.send_to_peer(
+            peer.host,
+            peer.port,
+            {
+                "type": "chain_response",
+                "blocks": [block.to_dict() for block in blocks],
             },
         )
 
