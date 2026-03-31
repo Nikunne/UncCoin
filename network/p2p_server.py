@@ -7,6 +7,7 @@ from typing import Callable
 
 from core.hashing import sha256_transaction_hash
 from core.transaction import Transaction
+from wallet import Wallet, load_wallet
 
 
 @dataclass(frozen=True)
@@ -19,6 +20,7 @@ class PeerAddress:
 class P2PServer:
     host: str
     port: int
+    wallet: Wallet | None = None
     on_transaction: Callable[[Transaction], None] | None = None
     peers: set[PeerAddress] = field(default_factory=set)
     seen_transaction_ids: set[str] = field(default_factory=set)
@@ -35,6 +37,9 @@ class P2PServer:
             self.port,
         )
         print(f"P2P server listening on {self.host}:{self.port}")
+        if self.wallet is not None:
+            wallet_name = self.wallet.name or "unnamed"
+            print(f"Loaded wallet '{wallet_name}' with address {self.wallet.address}")
 
     async def serve_forever(self) -> None:
         if self.server is None:
@@ -276,7 +281,7 @@ async def _interactive_console(server: P2PServer) -> None:
         'Enter JSON to broadcast, "/send host:port {...}" for a direct message, '
         '"/peers" to list connected peers, "/known-peers" to list discovered peers, '
         '"/discover" to ask peers for more peers, "/tx sender receiver amount" '
-        'to broadcast a transaction, or "/quit" to exit.'
+        'to broadcast a transaction, "/clear" to clear the screen, or "/quit" to exit.'
     )
 
     while True:
@@ -291,6 +296,10 @@ async def _interactive_console(server: P2PServer) -> None:
 
         if line == "/quit":
             return
+
+        if line == "/clear":
+            print("\033[2J\033[H", end="")
+            continue
 
         if line == "/peers":
             peers = server.list_peers()
@@ -361,9 +370,14 @@ async def _run_from_cli() -> None:
         action="store_true",
         help="Disable the interactive JSON console.",
     )
+    parser.add_argument(
+        "--wallet-name",
+        help="Optional wallet name to load from the wallets directory.",
+    )
     args = parser.parse_args()
 
-    server = P2PServer(host=args.host, port=args.port)
+    wallet = load_wallet(args.wallet_name) if args.wallet_name else None
+    server = P2PServer(host=args.host, port=args.port, wallet=wallet)
     await server.start()
 
     for peer in args.peer:
