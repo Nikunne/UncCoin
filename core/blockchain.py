@@ -11,6 +11,7 @@ from core.utils.mining import (
     is_mining_reward_transaction,
     validate_mining_reward_transaction,
 )
+from wallet.wallet import Wallet
 
 
 @dataclass
@@ -36,6 +37,9 @@ class Blockchain:
     def add_transaction(self, transaction: Transaction) -> None:
         if is_mining_reward_transaction(transaction):
             raise ValueError("Mining reward transactions can only be created by the blockchain.")
+
+        if not self._validate_transaction_authenticity(transaction):
+            raise ValueError("Transaction has invalid signature or sender identity.")
 
         balances = self._calculate_balances(self.blocks)
         for pending_transaction in self.pending_transactions:
@@ -150,6 +154,9 @@ class Blockchain:
         transaction: Transaction,
         balances: dict[str, Decimal],
     ) -> bool:
+        if not self._validate_transaction_authenticity(transaction):
+            return False
+
         if (
             not transaction.receiver
             or transaction.amount <= Decimal("0.0")
@@ -176,3 +183,20 @@ class Blockchain:
             balances.get(transaction.receiver, Decimal("0.0")) + transaction.amount
         )
         return True
+
+    def _validate_transaction_authenticity(self, transaction: Transaction) -> bool:
+        if is_mining_reward_transaction(transaction):
+            return transaction.sender_public_key is None and transaction.signature is None
+
+        if transaction.sender_public_key is None or transaction.signature is None:
+            return False
+
+        sender_address = Wallet.address_from_public_key(transaction.sender_public_key)
+        if transaction.sender != sender_address:
+            return False
+
+        return Wallet.verify_signature_with_public_key(
+            message=transaction.signing_payload(),
+            signature=transaction.signature,
+            public_key=transaction.sender_public_key,
+        )

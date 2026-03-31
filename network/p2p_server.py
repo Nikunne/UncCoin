@@ -281,7 +281,7 @@ async def _interactive_console(server: P2PServer) -> None:
     print(
         'Enter JSON to broadcast, "/send host:port {...}" for a direct message, '
         '"/peers" to list connected peers, "/known-peers" to list discovered peers, '
-        '"/discover" to ask peers for more peers, "/tx sender receiver amount fee" '
+        '"/discover" to ask peers for more peers, "/tx receiver amount fee" '
         'to broadcast a transaction, "/clear" to clear the screen, or "/quit" to exit.'
     )
 
@@ -322,15 +322,21 @@ async def _interactive_console(server: P2PServer) -> None:
             continue
 
         if line.startswith("/tx "):
+            if server.wallet is None:
+                print("A loaded wallet is required to create signed transactions.")
+                continue
+
             try:
-                sender, receiver, amount, fee = line[len("/tx "):].split(" ", maxsplit=3)
+                receiver, amount, fee = line[len("/tx "):].split(" ", maxsplit=2)
                 transaction = Transaction(
-                    sender=sender,
+                    sender=server.wallet.address,
                     receiver=receiver,
                     amount=amount,
                     fee=fee,
                     timestamp=datetime.now(),
+                    sender_public_key=server.wallet.public_key,
                 )
+                transaction.signature = server.wallet.sign_message(transaction.signing_payload())
                 await server.broadcast_transaction(transaction)
             except ValueError as error:
                 print(f"Invalid /tx command: {error}")

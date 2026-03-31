@@ -4,10 +4,17 @@ from core.block import Block
 from core.transaction import Transaction
 
 
+def serialize_public_key(public_key: tuple[int, int] | None) -> str:
+    if public_key is None:
+        return ""
+    return f"{public_key[0]}:{public_key[1]}"
+
+
 def serialize_transaction(transaction: Transaction) -> str:
     return (
         f"{transaction.sender}|{transaction.receiver}|"
-        f"{transaction.amount}|{transaction.fee}|{transaction.timestamp.isoformat()}"
+        f"{transaction.amount}|{transaction.fee}|{transaction.timestamp.isoformat()}|"
+        f"{serialize_public_key(transaction.sender_public_key)}|{transaction.signature or ''}"
     )
 
 

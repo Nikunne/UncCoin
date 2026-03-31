@@ -21,11 +21,29 @@ class Wallet:
         return format(signature, "x")
 
     def verify_signature(self, message: str, signature: str) -> bool:
-        digest = self._message_digest(message)
-        public_exponent, modulus = self.public_key
+        return self.verify_signature_with_public_key(
+            message=message,
+            signature=signature,
+            public_key=self.public_key,
+        )
+
+    @staticmethod
+    def verify_signature_with_public_key(
+        message: str,
+        signature: str,
+        public_key: tuple[int, int],
+    ) -> bool:
+        digest = Wallet._message_digest(message)
+        public_exponent, modulus = public_key
         signature_value = int(signature, 16)
         verified_digest = pow(signature_value, public_exponent, modulus)
         return digest == verified_digest
+
+    @staticmethod
+    def address_from_public_key(public_key: tuple[int, int]) -> str:
+        public_exponent, modulus = public_key
+        key_material = f"{public_exponent}:{modulus}".encode("utf-8")
+        return hashlib.sha256(key_material).hexdigest()
 
     def to_dict(self) -> dict:
         return {
