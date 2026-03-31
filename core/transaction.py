@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from decimal import Decimal
 from datetime import datetime
 
 
@@ -6,14 +7,20 @@ from datetime import datetime
 class Transaction:
     sender: str
     receiver: str
-    amount: float
+    amount: Decimal
+    fee: Decimal
     timestamp: datetime
+
+    def __post_init__(self) -> None:
+        self.amount = Decimal(str(self.amount))
+        self.fee = Decimal(str(self.fee))
 
     def to_dict(self) -> dict:
         return {
             "sender": self.sender,
             "receiver": self.receiver,
-            "amount": self.amount,
+            "amount": str(self.amount),
+            "fee": str(self.fee),
             "timestamp": self.timestamp.isoformat(),
         }
 
@@ -22,6 +29,7 @@ class Transaction:
         return cls(
             sender=transaction_data["sender"],
             receiver=transaction_data["receiver"],
-            amount=float(transaction_data["amount"]),
+            amount=Decimal(str(transaction_data["amount"])),
+            fee=Decimal(str(transaction_data.get("fee", "0.0"))),
             timestamp=datetime.fromisoformat(transaction_data["timestamp"]),
         )

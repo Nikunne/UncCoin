@@ -33,25 +33,9 @@ def short_binary_hash(block_hash: str, difficulty_bits: int) -> str:
 
 
 def proof_of_work(block: Block, difficulty_bits: int) -> str:
-    print(f"Starting proof of work for block {block.block_id}")
-    print(
-        f"Initial nonce: {block.nonce}, hash: "
-        f"{short_binary_hash(block.block_hash, difficulty_bits)}"
-    )
-
     while not has_leading_zero_bits(block.block_hash, difficulty_bits):
         block.nonce += 1
         block.block_hash = block.hash_function(block)
-        print(
-            f"Trying nonce {block.nonce}: "
-            f"{short_binary_hash(block.block_hash, difficulty_bits)}"
-        )
-
-    print(f"Proof of work complete for block {block.block_id}")
-    print(
-        f"Winning nonce: {block.nonce}, hash: "
-        f"{short_binary_hash(block.block_hash, difficulty_bits)}"
-    )
 
     return block.block_hash
 

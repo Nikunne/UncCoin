@@ -235,7 +235,8 @@ class P2PServer:
             print(
                 "Received transaction "
                 f"{transaction_id[:12]} from {peer.host}:{peer.port}: "
-                f"{transaction.sender} -> {transaction.receiver} ({transaction.amount})"
+                f"{transaction.sender} -> {transaction.receiver} "
+                f"({transaction.amount}, fee {transaction.fee})"
             )
             await self._broadcast_to_peers(message, exclude_peer=peer)
             return peer
@@ -280,7 +281,7 @@ async def _interactive_console(server: P2PServer) -> None:
     print(
         'Enter JSON to broadcast, "/send host:port {...}" for a direct message, '
         '"/peers" to list connected peers, "/known-peers" to list discovered peers, '
-        '"/discover" to ask peers for more peers, "/tx sender receiver amount" '
+        '"/discover" to ask peers for more peers, "/tx sender receiver amount fee" '
         'to broadcast a transaction, "/clear" to clear the screen, or "/quit" to exit.'
     )
 
@@ -322,11 +323,12 @@ async def _interactive_console(server: P2PServer) -> None:
 
         if line.startswith("/tx "):
             try:
-                sender, receiver, amount = line[len("/tx "):].split(" ", maxsplit=2)
+                sender, receiver, amount, fee = line[len("/tx "):].split(" ", maxsplit=3)
                 transaction = Transaction(
                     sender=sender,
                     receiver=receiver,
-                    amount=float(amount),
+                    amount=amount,
+                    fee=fee,
                     timestamp=datetime.now(),
                 )
                 await server.broadcast_transaction(transaction)
