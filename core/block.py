@@ -1,6 +1,8 @@
 from dataclasses import dataclass, field
 from typing import Callable
 
+from core.native_pow import mine_pow as native_mine_pow
+from core.serialization import serialize_block_prefix
 from core.transaction import Transaction
 
 
@@ -68,11 +70,22 @@ def proof_of_work(
     progress_callback: Callable[[int], None] | None = None,
     progress_interval: int = 10_000,
 ) -> str:
-    while not has_leading_zero_bits(block.block_hash, difficulty_bits):
-        block.nonce += 1
-        if progress_callback is not None and block.nonce % progress_interval == 0:
-            progress_callback(block.nonce)
-        block.block_hash = block.hash_function(block)
+    if (
+        block.hash_function.__module__ != "core.hashing"
+        or block.hash_function.__name__ != "sha256_block_hash"
+    ):
+        raise ValueError("Native proof-of-work only supports core.hashing.sha256_block_hash.")
+
+    prefix = serialize_block_prefix(block)
+    native_progress_interval = progress_interval if progress_callback is not None else 0
+    nonce, block_hash = native_mine_pow(
+        prefix,
+        difficulty_bits,
+        block.nonce,
+        native_progress_interval,
+    )
+    block.nonce = nonce
+    block.block_hash = block_hash
 
     return block.block_hash
 

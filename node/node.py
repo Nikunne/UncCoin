@@ -10,6 +10,7 @@ from core.hashing import sha256_block_hash
 from core.transaction import Transaction
 from core.utils.constants import GENESIS_PREVIOUS_HASH
 from network.p2p_server import P2PServer
+from node.storage import load_blockchain_state, save_blockchain_state
 from wallet import Wallet
 
 
@@ -21,6 +22,9 @@ class Node:
     blockchain: Blockchain | None = None
     difficulty_bits: int = DEFAULT_DIFFICULTY_BITS
     p2p_server: P2PServer = field(init=False)
+    automine_task: asyncio.Task | None = field(default=None, init=False)
+    automine_description: str = field(default="Auto-mined block", init=False)
+    _automine_stop_requested: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         if self.blockchain is None:
@@ -38,6 +42,7 @@ class Node:
         )
 
     async def start(self) -> None:
+        self._load_persisted_blockchain()
         self._ensure_genesis_block()
         await self.p2p_server.start()
         if self.wallet is not None:
@@ -48,6 +53,8 @@ class Node:
         await self.p2p_server.serve_forever()
 
     async def stop(self) -> None:
+        await self.stop_automine(wait=True)
+        self._save_persisted_blockchain()
         await self.p2p_server.stop()
 
     async def connect_to_peer(self, host: str, port: int) -> None:
@@ -133,6 +140,49 @@ class Node:
         await self.broadcast_block(block)
         return block
 
+    async def start_automine(self, description: str) -> None:
+        if self.automine_task is not None and not self.automine_task.done():
+            raise ValueError("Automine is already running.")
+        if self.wallet is None:
+            raise ValueError("A loaded wallet is required to mine.")
+        if self.blockchain is None:
+            raise ValueError("A blockchain is required to mine.")
+
+        self.automine_description = description
+        self._automine_stop_requested = False
+        self.automine_task = asyncio.create_task(self._automine_loop())
+
+    async def stop_automine(self, wait: bool = False) -> None:
+        if self.automine_task is None or self.automine_task.done():
+            self.automine_task = None
+            return
+
+        self._automine_stop_requested = True
+        if wait:
+            await self.automine_task
+
+    async def _automine_loop(self) -> None:
+        assert self.wallet is not None
+        assert self.blockchain is not None
+
+        try:
+            while not self._automine_stop_requested:
+                block = await asyncio.to_thread(
+                    self.blockchain.mine_pending_transactions,
+                    self.wallet.address,
+                    self.automine_description,
+                )
+                await self.broadcast_block(block)
+                print(
+                    f"\nAuto-mined block {block.block_hash[:12]} at height {block.block_id}",
+                    flush=True,
+                )
+        except ValueError as error:
+            print(f"\nAutomine stopped: {error}", flush=True)
+        finally:
+            self.automine_task = None
+            self._automine_stop_requested = False
+
     async def interactive_console(self) -> None:
         print("Interactive mode enabled.")
         print(
@@ -140,6 +190,7 @@ class Node:
             '"peers" to list connected peers, "known-peers" to list discovered peers, '
             '"discover" to ask peers for more peers, "tx receiver amount fee" '
             'to broadcast a transaction, "mine [description]" to mine pending transactions, '
+            '"automine [description]" to mine continuously, "stop" to stop automining, '
             '"blockchain" to print the canonical chain, "balance [address]" to print a balance, '
             '"clear" to clear the screen, or "quit" to exit.'
         )
@@ -180,6 +231,15 @@ class Node:
                 print("Peer discovery request sent.")
                 continue
 
+            if line == "stop":
+                if self.automine_task is None or self.automine_task.done():
+                    print("Automine is not running.")
+                    continue
+                print("Stopping automine after the current block...")
+                await self.stop_automine(wait=True)
+                print("Automine stopped.")
+                continue
+
             if line == "blockchain":
                 print(self.format_canonical_blockchain())
                 continue
@@ -214,6 +274,15 @@ class Node:
                     print(f"Mined and broadcast block {block.block_hash[:12]} at height {block.block_id}")
                 except ValueError as error:
                     print(f"Mining failed: {error}")
+                continue
+
+            if line.startswith("automine"):
+                description = line[len("automine"):].strip() or "Auto-mined block"
+                try:
+                    await self.start_automine(description)
+                    print("Automine started.")
+                except ValueError as error:
+                    print(f"Automine failed: {error}")
                 continue
 
             if line.startswith("send "):
@@ -287,6 +356,31 @@ class Node:
         )
         proof_of_work(genesis_block, self.blockchain.difficulty_bits)
         self.blockchain.add_block(genesis_block)
+
+    def _load_persisted_blockchain(self) -> None:
+        if self.wallet is None:
+            return
+
+        persisted_blockchain = load_blockchain_state(
+            self.wallet.address,
+            hash_function=sha256_block_hash,
+        )
+        if persisted_blockchain is None:
+            return
+
+        self.blockchain = persisted_blockchain
+        print(
+            f"Loaded persisted blockchain for {self.wallet.address} "
+            f"({len(self.blockchain.blocks)} blocks)",
+            flush=True,
+        )
+
+    def _save_persisted_blockchain(self) -> None:
+        if self.wallet is None or self.blockchain is None:
+            return
+
+        path = save_blockchain_state(self.wallet.address, self.blockchain)
+        print(f"Saved blockchain state to {path}", flush=True)
 
     def format_canonical_blockchain(self) -> str:
         if self.blockchain is None or not self.blockchain.blocks:

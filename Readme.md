@@ -8,6 +8,8 @@ known-peers
 discover
 tx <receiver> <amount> <fee>
 mine [description]
+automine [description]
+stop
 blockchain
 balance [address]
 send <host:port> <json>
