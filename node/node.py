@@ -133,11 +133,12 @@ class Node:
     async def interactive_console(self) -> None:
         print("Interactive mode enabled.")
         print(
-            'Enter JSON to broadcast, "/send host:port {...}" for a direct message, '
-            '"/peers" to list connected peers, "/known-peers" to list discovered peers, '
-            '"/discover" to ask peers for more peers, "/tx receiver amount fee" '
-            'to broadcast a transaction, "/mine [description]" to mine pending transactions, '
-            '"/clear" to clear the screen, or "/quit" to exit.'
+            'Enter JSON to broadcast, "send host:port {...}" for a direct message, '
+            '"peers" to list connected peers, "known-peers" to list discovered peers, '
+            '"discover" to ask peers for more peers, "tx receiver amount fee" '
+            'to broadcast a transaction, "mine [description]" to mine pending transactions, '
+            '"blockchain" to print the canonical chain, "balance [address]" to print a balance, '
+            '"clear" to clear the screen, or "quit" to exit.'
         )
 
         while True:
@@ -150,35 +151,49 @@ class Node:
             if not line:
                 continue
 
-            if line == "/quit":
+            if line == "quit":
                 return
 
-            if line == "/clear":
+            if line == "clear":
                 print("\033[2J\033[H", end="")
                 continue
 
-            if line == "/peers":
+            if line == "peers":
                 peers = self.list_peers()
                 print("Connected peers:" if peers else "No connected peers.")
                 for peer in peers:
                     print(peer)
                 continue
 
-            if line == "/known-peers":
+            if line == "known-peers":
                 peers = self.list_known_peers()
                 print("Known peers:" if peers else "No known peers.")
                 for peer in peers:
                     print(peer)
                 continue
 
-            if line == "/discover":
+            if line == "discover":
                 await self.discover_peers()
                 print("Peer discovery request sent.")
                 continue
 
-            if line.startswith("/tx "):
+            if line == "blockchain":
+                print(self.format_canonical_blockchain())
+                continue
+
+            if line.startswith("balance"):
+                address = line[len("balance"):].strip() or (
+                    self.wallet.address if self.wallet is not None else ""
+                )
+                if not address:
+                    print("Balance command requires an address when no wallet is loaded.")
+                    continue
+                print(f"Balance for {address}: {self.get_balance(address)}")
+                continue
+
+            if line.startswith("tx "):
                 try:
-                    receiver, amount, fee = line[len("/tx "):].split(" ", maxsplit=2)
+                    receiver, amount, fee = line[len("tx "):].split(" ", maxsplit=2)
                     transaction = self.create_signed_transaction(
                         receiver=receiver,
                         amount=amount,
@@ -186,11 +201,11 @@ class Node:
                     )
                     await self.broadcast_transaction(transaction)
                 except ValueError as error:
-                    print(f"Invalid /tx command: {error}")
+                    print(f"Invalid tx command: {error}")
                 continue
 
-            if line.startswith("/mine"):
-                description = line[len("/mine"):].strip() or "Mined block"
+            if line.startswith("mine"):
+                description = line[len("mine"):].strip() or "Mined block"
                 try:
                     block = await self.mine_pending_transactions_with_progress(description)
                     print(f"Mined and broadcast block {block.block_hash[:12]} at height {block.block_id}")
@@ -198,15 +213,15 @@ class Node:
                     print(f"Mining failed: {error}")
                 continue
 
-            if line.startswith("/send "):
+            if line.startswith("send "):
                 try:
-                    peer_part, message_part = line[len("/send "):].split(" ", maxsplit=1)
+                    peer_part, message_part = line[len("send "):].split(" ", maxsplit=1)
                     host, port = peer_part.split(":", maxsplit=1)
                     message = json.loads(message_part)
                     await self.send_to_peer(host, int(port), message)
                     print(f"Sent direct message to {host}:{port}")
                 except (ValueError, json.JSONDecodeError) as error:
-                    print(f"Invalid /send command: {error}")
+                    print(f"Invalid send command: {error}")
                 continue
 
             try:
@@ -249,3 +264,21 @@ class Node:
         )
         proof_of_work(genesis_block, self.blockchain.difficulty_bits)
         self.blockchain.add_block(genesis_block)
+
+    def format_canonical_blockchain(self) -> str:
+        if self.blockchain is None or not self.blockchain.blocks:
+            return "Canonical blockchain is empty."
+
+        lines = ["Canonical blockchain:"]
+        for block in self.blockchain.blocks:
+            lines.append(
+                f"#{block.block_id} {block.block_hash[:12]} "
+                f"prev={block.previous_hash[:12]} txs={len(block.transactions)} "
+                f'"{block.description}"'
+            )
+        return "\n".join(lines)
+
+    def get_balance(self, address: str) -> str:
+        if self.blockchain is None:
+            return "0.0"
+        return str(self.blockchain.get_balance(address))
