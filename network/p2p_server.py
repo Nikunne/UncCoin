@@ -20,7 +20,7 @@ class P2PServer:
     host: str
     port: int
     on_transaction: Callable[[Transaction], bool] | None = None
-    on_block: Callable[[Block], bool] | None = None
+    on_block: Callable[[Block], str] | None = None
     on_chain_request: Callable[[], list[Block]] | None = None
     on_chain_response: Callable[[list[Block]], None] | None = None
     peers: set[PeerAddress] = field(default_factory=set)
@@ -285,16 +285,30 @@ class P2PServer:
                 print(f"Ignoring duplicate block {block_hash[:12]}")
                 return peer
 
-            if self.on_block is not None and not self.on_block(block):
-                print(f"Rejected block {block_hash[:12]} from {peer.host}:{peer.port}")
+            block_status = self.on_block(block) if self.on_block is not None else "rejected"
+            if block_status == "accepted":
+                self.seen_block_hashes.add(block_hash)
+                print(
+                    f"Received block {block_hash[:12]} from {peer.host}:{peer.port} "
+                    f"at height {block.block_id}"
+                )
+                await self._broadcast_to_peers(message, exclude_peer=peer)
                 return peer
 
-            self.seen_block_hashes.add(block_hash)
-            print(
-                f"Received block {block_hash[:12]} from {peer.host}:{peer.port} "
-                f"at height {block.block_id}"
-            )
-            await self._broadcast_to_peers(message, exclude_peer=peer)
+            if block_status == "orphaned":
+                self.seen_block_hashes.add(block_hash)
+                print(
+                    f"Stored orphan block {block_hash[:12]} from {peer.host}:{peer.port} "
+                    f"at height {block.block_id}"
+                )
+                return peer
+
+            if block_status == "duplicate":
+                self.seen_block_hashes.add(block_hash)
+                print(f"Ignoring duplicate block {block_hash[:12]}")
+                return peer
+
+            print(f"Rejected block {block_hash[:12]} from {peer.host}:{peer.port}")
             return peer
 
         print(f"Received {message_type} from {peer.host}:{peer.port}: {message}")

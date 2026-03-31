@@ -141,17 +141,26 @@ class Blockchain:
         return block
 
     def add_block(self, block: Block) -> bool:
+        return self.add_block_with_status(block) == "accepted"
+
+    def add_block_with_status(self, block: Block) -> str:
         block_hash = block.block_hash
         if block_hash in self.blocks_by_hash:
-            return False
+            return "duplicate"
+
+        if (
+            block.previous_hash != GENESIS_PREVIOUS_HASH
+            and block.previous_hash not in self.block_states
+        ):
+            return "missing_parent"
 
         parent_state = self._get_parent_state_for_block(block)
         if parent_state is None:
-            return False
+            return "invalid"
 
         child_state = self._build_child_state(block, parent_state)
         if child_state is None:
-            return False
+            return "invalid"
 
         previous_head = self.main_tip_hash
         self.blocks_by_hash[block_hash] = block
@@ -164,7 +173,7 @@ class Blockchain:
             self.main_tip_hash = block_hash
 
         self._reconcile_pending_transactions(previous_head)
-        return True
+        return "accepted"
 
     def verify_chain(self) -> bool:
         temp_states: dict[str, ChainState] = {}

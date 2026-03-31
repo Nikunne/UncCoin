@@ -23,8 +23,10 @@ class Node:
     difficulty_bits: int = DEFAULT_DIFFICULTY_BITS
     p2p_server: P2PServer = field(init=False)
     automine_task: asyncio.Task | None = field(default=None, init=False)
-    automine_description: str = field(default="Auto-mined block", init=False)
+    automine_description: str = field(default="", init=False)
     _automine_stop_requested: bool = field(default=False, init=False)
+    orphan_blocks_by_parent_hash: dict[str, list[Block]] = field(default_factory=dict, init=False)
+    orphan_block_hashes: set[str] = field(default_factory=set, init=False)
 
     def __post_init__(self) -> None:
         if self.blockchain is None:
@@ -107,6 +109,11 @@ class Node:
         )
         transaction.signature = self.wallet.sign_message(transaction.signing_payload())
         return transaction
+
+    def default_block_description(self, prefix: str) -> str:
+        if self.wallet is None or not self.wallet.name:
+            return prefix
+        return f"{prefix} ({self.wallet.name})"
 
     async def mine_pending_transactions(self, description: str) -> Block:
         if self.wallet is None:
@@ -268,7 +275,10 @@ class Node:
                 continue
 
             if line.startswith("mine"):
-                description = line[len("mine"):].strip() or "Mined block"
+                description = (
+                    line[len("mine"):].strip()
+                    or self.default_block_description("Mined block")
+                )
                 try:
                     block = await self.mine_pending_transactions_with_progress(description)
                     print(f"Mined and broadcast block {block.block_hash[:12]} at height {block.block_id}")
@@ -277,7 +287,10 @@ class Node:
                 continue
 
             if line.startswith("automine"):
-                description = line[len("automine"):].strip() or "Auto-mined block"
+                description = (
+                    line[len("automine"):].strip()
+                    or self.default_block_description("Auto-mined block")
+                )
                 try:
                     await self.start_automine(description)
                     print("Automine started.")
@@ -317,11 +330,11 @@ class Node:
 
         return True
 
-    def _handle_incoming_block(self, block: Block) -> bool:
+    def _handle_incoming_block(self, block: Block) -> str:
         if self.blockchain is None:
-            return False
+            return "rejected"
 
-        return self.blockchain.add_block(block)
+        return self._accept_or_store_block(block)
 
     def _handle_chain_request(self) -> list[Block]:
         if self.blockchain is None:
@@ -336,10 +349,8 @@ class Node:
         for block in blocks:
             if block.block_hash in self.blockchain.blocks_by_hash:
                 continue
-            if self.blockchain.add_block(block):
+            if self._accept_or_store_block(block) == "accepted":
                 accepted_blocks += 1
-            else:
-                print(f"Rejected synced block {block.block_hash[:12]}")
 
         print(f"Synchronized {accepted_blocks} block(s) from peer.")
 
@@ -399,3 +410,54 @@ class Node:
         if self.blockchain is None:
             return "0.0"
         return str(self.blockchain.get_balance(address))
+
+    def _accept_or_store_block(self, block: Block) -> str:
+        assert self.blockchain is not None
+
+        status = self.blockchain.add_block_with_status(block)
+        if status == "accepted":
+            self.orphan_block_hashes.discard(block.block_hash)
+            self._resolve_orphan_descendants(block.block_hash)
+            return "accepted"
+
+        if status == "duplicate":
+            self.orphan_block_hashes.discard(block.block_hash)
+            return "duplicate"
+
+        if status == "missing_parent":
+            self._store_orphan_block(block)
+            return "orphaned"
+
+        self.orphan_block_hashes.discard(block.block_hash)
+        return "rejected"
+
+    def _store_orphan_block(self, block: Block) -> None:
+        if block.block_hash in self.orphan_block_hashes:
+            return
+
+        self.orphan_block_hashes.add(block.block_hash)
+        self.orphan_blocks_by_parent_hash.setdefault(block.previous_hash, []).append(block)
+
+    def _resolve_orphan_descendants(self, parent_hash: str) -> None:
+        pending_parent_hashes = [parent_hash]
+
+        while pending_parent_hashes:
+            current_parent_hash = pending_parent_hashes.pop()
+            orphan_blocks = self.orphan_blocks_by_parent_hash.pop(current_parent_hash, [])
+
+            for orphan_block in orphan_blocks:
+                status = self.blockchain.add_block_with_status(orphan_block)
+                if status == "accepted":
+                    self.orphan_block_hashes.discard(orphan_block.block_hash)
+                    print(
+                        f"Accepted orphan block {orphan_block.block_hash[:12]} "
+                        f"at height {orphan_block.block_id}"
+                    )
+                    pending_parent_hashes.append(orphan_block.block_hash)
+                elif status == "missing_parent":
+                    self._store_orphan_block(orphan_block)
+                elif status == "duplicate":
+                    self.orphan_block_hashes.discard(orphan_block.block_hash)
+                else:
+                    self.orphan_block_hashes.discard(orphan_block.block_hash)
+                    print(f"Rejected orphan block {orphan_block.block_hash[:12]}")

@@ -2,3 +2,5 @@
 __pycache__
 wallets/*
 !wallets/.gitkeep
+blockchains/*
+!blockchains/.gitkeep
