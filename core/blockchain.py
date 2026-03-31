@@ -34,6 +34,16 @@ class Blockchain:
 
         return balances.get(address, Decimal("0.0"))
 
+    def get_next_nonce(self, address: str) -> int:
+        balances = self._calculate_balances(self.blocks)
+        nonces = self._calculate_next_nonces(self.blocks)
+
+        for transaction in self.pending_transactions:
+            if not self._apply_transaction_to_state(transaction, balances, nonces):
+                raise ValueError("Existing pending transactions are invalid.")
+
+        return nonces.get(address, 0)
+
     def add_transaction(self, transaction: Transaction) -> None:
         if is_mining_reward_transaction(transaction):
             raise ValueError("Mining reward transactions can only be created by the blockchain.")
@@ -42,11 +52,16 @@ class Blockchain:
             raise ValueError("Transaction has invalid signature or sender identity.")
 
         balances = self._calculate_balances(self.blocks)
+        nonces = self._calculate_next_nonces(self.blocks)
         for pending_transaction in self.pending_transactions:
-            if not self._apply_transaction_to_balances(pending_transaction, balances):
+            if not self._apply_transaction_to_state(pending_transaction, balances, nonces):
                 raise ValueError("Existing pending transactions are invalid.")
 
-        if not self._apply_transaction_to_balances(transaction, balances):
+        expected_nonce = nonces.get(transaction.sender, 0)
+        if transaction.nonce != expected_nonce:
+            raise ValueError("Transaction has invalid nonce.")
+
+        if not self._apply_transaction_to_state(transaction, balances, nonces):
             raise ValueError("Transaction is invalid or sender has insufficient funds.")
 
         self.pending_transactions.append(transaction)
@@ -97,7 +112,8 @@ class Blockchain:
             return False
 
         balances = self._calculate_balances(self.blocks)
-        if not self._validate_block_transactions(block, balances):
+        nonces = self._calculate_next_nonces(self.blocks)
+        if not self._validate_block_transactions(block, balances, nonces):
             return False
 
         if not verify_block(block, self.difficulty_bits):
@@ -108,6 +124,7 @@ class Blockchain:
 
     def verify_chain(self) -> bool:
         balances: dict[str, Decimal] = {}
+        nonces: dict[str, int] = {}
 
         for index, block in enumerate(self.blocks):
             expected_previous_hash = get_previous_hash(self.blocks[:index])
@@ -121,7 +138,7 @@ class Blockchain:
             if not validate_mining_reward_transaction(block):
                 return False
 
-            if not self._validate_block_transactions(block, balances):
+            if not self._validate_block_transactions(block, balances, nonces):
                 return False
 
             if not verify_block(block, self.difficulty_bits):
@@ -131,28 +148,41 @@ class Blockchain:
 
     def _calculate_balances(self, blocks: list[Block]) -> dict[str, Decimal]:
         balances: dict[str, Decimal] = {}
+        nonces: dict[str, int] = {}
 
         for block in blocks:
-            if not self._validate_block_transactions(block, balances):
+            if not self._validate_block_transactions(block, balances, nonces):
                 raise ValueError("Blockchain contains invalid transactions.")
 
         return balances
+
+    def _calculate_next_nonces(self, blocks: list[Block]) -> dict[str, int]:
+        balances: dict[str, Decimal] = {}
+        nonces: dict[str, int] = {}
+
+        for block in blocks:
+            if not self._validate_block_transactions(block, balances, nonces):
+                raise ValueError("Blockchain contains invalid transactions.")
+
+        return nonces
 
     def _validate_block_transactions(
         self,
         block: Block,
         balances: dict[str, Decimal],
+        nonces: dict[str, int],
     ) -> bool:
         for transaction in block.transactions:
-            if not self._apply_transaction_to_balances(transaction, balances):
+            if not self._apply_transaction_to_state(transaction, balances, nonces):
                 return False
 
         return True
 
-    def _apply_transaction_to_balances(
+    def _apply_transaction_to_state(
         self,
         transaction: Transaction,
         balances: dict[str, Decimal],
+        nonces: dict[str, int],
     ) -> bool:
         if not self._validate_transaction_authenticity(transaction):
             return False
@@ -173,11 +203,16 @@ class Blockchain:
         if not transaction.sender:
             return False
 
+        expected_nonce = nonces.get(transaction.sender, 0)
+        if transaction.nonce != expected_nonce:
+            return False
+
         sender_balance = balances.get(transaction.sender, Decimal("0.0"))
         total_cost = transaction.amount + transaction.fee
         if sender_balance < total_cost:
             return False
 
+        nonces[transaction.sender] = expected_nonce + 1
         balances[transaction.sender] = sender_balance - total_cost
         balances[transaction.receiver] = (
             balances.get(transaction.receiver, Decimal("0.0")) + transaction.amount

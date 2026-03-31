@@ -22,6 +22,7 @@ class P2PServer:
     port: int
     wallet: Wallet | None = None
     on_transaction: Callable[[Transaction], None] | None = None
+    get_next_nonce: Callable[[str], int] | None = None
     peers: set[PeerAddress] = field(default_factory=set)
     seen_transaction_ids: set[str] = field(default_factory=set)
     server: asyncio.base_events.Server | None = field(default=None, init=False)
@@ -334,6 +335,11 @@ async def _interactive_console(server: P2PServer) -> None:
                     amount=amount,
                     fee=fee,
                     timestamp=datetime.now(),
+                    nonce=(
+                        server.get_next_nonce(server.wallet.address)
+                        if server.get_next_nonce is not None
+                        else 0
+                    ),
                     sender_public_key=server.wallet.public_key,
                 )
                 transaction.signature = server.wallet.sign_message(transaction.signing_payload())

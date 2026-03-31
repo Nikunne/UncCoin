@@ -10,6 +10,7 @@ from wallet import create_wallet
 
 
 def create_signed_transaction(
+    blockchain: Blockchain,
     sender_wallet,
     receiver_address: str,
     amount: Decimal,
@@ -21,6 +22,7 @@ def create_signed_transaction(
         amount=amount,
         fee=fee,
         timestamp=datetime.now(),
+        nonce=blockchain.get_next_nonce(sender_wallet.address),
         sender_public_key=sender_wallet.public_key,
     )
     transaction.signature = sender_wallet.sign_message(transaction.signing_payload())
@@ -55,6 +57,7 @@ def main() -> None:
 
     blockchain.add_transaction(
         create_signed_transaction(
+            blockchain=blockchain,
             sender_wallet=alice_wallet,
             receiver_address=bob_wallet.address,
             amount=Decimal("9.5"),
@@ -63,6 +66,7 @@ def main() -> None:
     )
     blockchain.add_transaction(
         create_signed_transaction(
+            blockchain=blockchain,
             sender_wallet=bob_wallet,
             receiver_address=charlie_wallet.address,
             amount=Decimal("3.5"),

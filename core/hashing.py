@@ -14,6 +14,7 @@ def serialize_transaction(transaction: Transaction) -> str:
     return (
         f"{transaction.sender}|{transaction.receiver}|"
         f"{transaction.amount}|{transaction.fee}|{transaction.timestamp.isoformat()}|"
+        f"{transaction.nonce}|"
         f"{serialize_public_key(transaction.sender_public_key)}|{transaction.signature or ''}"
     )
 

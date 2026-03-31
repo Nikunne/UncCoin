@@ -10,6 +10,7 @@ class Transaction:
     amount: Decimal
     fee: Decimal
     timestamp: datetime
+    nonce: int = 0
     sender_public_key: tuple[int, int] | None = None
     signature: str | None = None
 
@@ -24,6 +25,7 @@ class Transaction:
             "amount": str(self.amount),
             "fee": str(self.fee),
             "timestamp": self.timestamp.isoformat(),
+            "nonce": self.nonce,
             "sender_public_key": (
                 {
                     "exponent": str(self.sender_public_key[0]),
@@ -44,6 +46,7 @@ class Transaction:
             amount=Decimal(str(transaction_data["amount"])),
             fee=Decimal(str(transaction_data.get("fee", "0.0"))),
             timestamp=datetime.fromisoformat(transaction_data["timestamp"]),
+            nonce=int(transaction_data.get("nonce", 0)),
             sender_public_key=(
                 (
                     int(sender_public_key_data["exponent"]),
@@ -57,6 +60,6 @@ class Transaction:
 
     def signing_payload(self) -> str:
         return (
-            f"{self.sender}|{self.receiver}|{self.amount}|{self.fee}|"
+            f"{self.sender}|{self.receiver}|{self.amount}|{self.fee}|{self.nonce}|"
             f"{self.timestamp.isoformat()}"
         )
