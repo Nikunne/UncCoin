@@ -38,6 +38,11 @@ class BlockAcceptanceResult:
 class Blockchain:
     difficulty_bits: int
     hash_function: Callable[[Block], str]
+    genesis_difficulty_bits: int | None = None
+    difficulty_growth_factor: int = 10
+    difficulty_growth_start_height: int = 100
+    difficulty_growth_bits: int = 1
+    difficulty_schedule_activation_height: int = 0
     blocks_by_hash: dict[str, Block] = field(default_factory=dict)
     children_by_hash: dict[str, list[str]] = field(default_factory=dict)
     block_states: dict[str, ChainState] = field(default_factory=dict)
@@ -47,6 +52,42 @@ class Blockchain:
     @property
     def blocks(self) -> list[Block]:
         return self.get_chain()
+
+    def get_difficulty_bits_for_height(self, block_height: int) -> int:
+        if block_height < 0:
+            raise ValueError("block_height must be non-negative.")
+        if self.genesis_difficulty_bits is not None and self.genesis_difficulty_bits < 0:
+            raise ValueError("genesis_difficulty_bits must be non-negative.")
+        if self.difficulty_growth_factor < 2:
+            raise ValueError("difficulty_growth_factor must be at least 2.")
+        if self.difficulty_growth_start_height < 1:
+            raise ValueError("difficulty_growth_start_height must be at least 1.")
+        if self.difficulty_growth_bits < 1:
+            raise ValueError("difficulty_growth_bits must be at least 1.")
+
+        if block_height == 0:
+            return (
+                self.genesis_difficulty_bits
+                if self.genesis_difficulty_bits is not None
+                else self.difficulty_bits
+            )
+
+        if block_height < self.difficulty_schedule_activation_height:
+            return self.difficulty_bits
+
+        if block_height < self.difficulty_growth_start_height:
+            return self.difficulty_bits
+
+        growth_steps = 0
+        threshold = self.difficulty_growth_start_height
+        while block_height >= threshold:
+            growth_steps += 1
+            threshold *= self.difficulty_growth_factor
+
+        return self.difficulty_bits + (growth_steps * self.difficulty_growth_bits)
+
+    def get_next_block_difficulty_bits(self) -> int:
+        return self.get_difficulty_bits_for_height(self._get_canonical_state().height + 1)
 
     def get_chain(self, tip_hash: str | None = None) -> list[Block]:
         chain: list[Block] = []
@@ -135,7 +176,7 @@ class Blockchain:
         )
         proof_of_work(
             block,
-            self.difficulty_bits,
+            self.get_difficulty_bits_for_height(block.block_id),
             progress_callback=progress_callback,
         )
 
@@ -255,7 +296,10 @@ class Blockchain:
         if mining_reward_error is not None:
             return None, mining_reward_error
 
-        block_verification_error = get_block_verification_error(block, self.difficulty_bits)
+        block_verification_error = get_block_verification_error(
+            block,
+            self.get_difficulty_bits_for_height(block.block_id),
+        )
         if block_verification_error is not None:
             return None, block_verification_error
 

@@ -7,6 +7,10 @@ from decimal import Decimal, InvalidOperation
 from typing import Callable
 
 from config import DEFAULT_DIFFICULTY_BITS
+from config import DEFAULT_DIFFICULTY_GROWTH_FACTOR
+from config import DEFAULT_DIFFICULTY_GROWTH_BITS
+from config import DEFAULT_DIFFICULTY_GROWTH_START_HEIGHT
+from config import DEFAULT_GENESIS_DIFFICULTY_BITS
 from core.block import Block, ProofOfWorkCancelled, proof_of_work
 from core.blockchain import Blockchain
 from core.hashing import sha256_block_hash
@@ -27,6 +31,10 @@ class Node:
     wallet: Wallet | None = None
     blockchain: Blockchain | None = None
     difficulty_bits: int = DEFAULT_DIFFICULTY_BITS
+    genesis_difficulty_bits: int = DEFAULT_GENESIS_DIFFICULTY_BITS
+    difficulty_growth_factor: int = DEFAULT_DIFFICULTY_GROWTH_FACTOR
+    difficulty_growth_start_height: int = DEFAULT_DIFFICULTY_GROWTH_START_HEIGHT
+    difficulty_growth_bits: int = DEFAULT_DIFFICULTY_GROWTH_BITS
     p2p_server: P2PServer = field(init=False)
     automine_task: asyncio.Task | None = field(default=None, init=False)
     automine_description: str = field(default="", init=False)
@@ -47,6 +55,10 @@ class Node:
             self.blockchain = Blockchain(
                 difficulty_bits=self.difficulty_bits,
                 hash_function=sha256_block_hash,
+                genesis_difficulty_bits=self.genesis_difficulty_bits,
+                difficulty_growth_factor=self.difficulty_growth_factor,
+                difficulty_growth_start_height=self.difficulty_growth_start_height,
+                difficulty_growth_bits=self.difficulty_growth_bits,
             )
         self.p2p_server = P2PServer(
             host=self.host,
@@ -173,6 +185,11 @@ class Node:
             return prefix
         return f"{prefix} ({self.wallet.name})"
 
+    def _next_mining_difficulty_bits(self) -> int:
+        if self.blockchain is None:
+            raise ValueError("A blockchain is required to mine.")
+        return self.blockchain.get_next_block_difficulty_bits()
+
     async def mine_pending_transactions(self, description: str) -> Block:
         if self.wallet is None:
             raise ValueError("A loaded wallet is required to mine.")
@@ -193,7 +210,7 @@ class Node:
         if self.blockchain is None:
             raise ValueError("A blockchain is required to mine.")
 
-        print("Mining...", flush=True)
+        print(f"Mining... (N={self._next_mining_difficulty_bits()})", flush=True)
         block = self.blockchain.mine_pending_transactions(
             miner_address=self.wallet.address,
             description=description,
@@ -232,7 +249,10 @@ class Node:
         try:
             while not self._automine_stop_requested:
                 self._current_automine_tip_hash = self.blockchain.main_tip_hash
-                print("Automining...", flush=True)
+                print(
+                    f"Automining... (N={self._next_mining_difficulty_bits()})",
+                    flush=True,
+                )
                 block = await asyncio.to_thread(
                     self.blockchain.mine_pending_transactions,
                     self.wallet.address,
@@ -643,7 +663,10 @@ class Node:
             description="Genesis block",
             previous_hash=GENESIS_PREVIOUS_HASH,
         )
-        proof_of_work(genesis_block, self.blockchain.difficulty_bits)
+        proof_of_work(
+            genesis_block,
+            self.blockchain.get_difficulty_bits_for_height(genesis_block.block_id),
+        )
         self.blockchain.add_block(genesis_block)
 
     def _load_persisted_blockchain(self) -> None:

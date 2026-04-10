@@ -2,6 +2,10 @@ from decimal import Decimal
 from datetime import datetime
 
 from config import DEFAULT_DIFFICULTY_BITS
+from config import DEFAULT_DIFFICULTY_GROWTH_BITS
+from config import DEFAULT_DIFFICULTY_GROWTH_FACTOR
+from config import DEFAULT_DIFFICULTY_GROWTH_START_HEIGHT
+from config import DEFAULT_GENESIS_DIFFICULTY_BITS
 from core.block import Block, proof_of_work
 from core.blockchain import Blockchain
 from core.hashing import sha256_block_hash
@@ -39,6 +43,10 @@ def main() -> None:
     blockchain = Blockchain(
         difficulty_bits=difficulty_bits,
         hash_function=sha256_block_hash,
+        genesis_difficulty_bits=DEFAULT_GENESIS_DIFFICULTY_BITS,
+        difficulty_growth_factor=DEFAULT_DIFFICULTY_GROWTH_FACTOR,
+        difficulty_growth_start_height=DEFAULT_DIFFICULTY_GROWTH_START_HEIGHT,
+        difficulty_growth_bits=DEFAULT_DIFFICULTY_GROWTH_BITS,
     )
 
     genesis_block = Block(
@@ -48,7 +56,10 @@ def main() -> None:
         description="Genesis block",
         previous_hash=GENESIS_PREVIOUS_HASH,
     )
-    proof_of_work(genesis_block, difficulty_bits)
+    proof_of_work(
+        genesis_block,
+        blockchain.get_difficulty_bits_for_height(genesis_block.block_id),
+    )
     blockchain.add_block(genesis_block)
 
     reward_block = blockchain.mine_pending_transactions(

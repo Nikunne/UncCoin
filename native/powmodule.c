@@ -39,6 +39,16 @@ typedef struct {
     size_t data_length;
 } sha256_context;
 
+typedef struct {
+    int nonce_length;
+    size_t first_nonce_offset;
+    size_t first_nonce_length;
+    size_t second_nonce_length;
+    int uses_second_block;
+    uint8_t first_block[64];
+    uint8_t second_block[64];
+} prepared_nonce_blocks;
+
 static const uint32_t SHA256_K[64] = {
     0x428a2f98U, 0x71374491U, 0xb5c0fbcfU, 0xe9b5dba5U,
     0x3956c25bU, 0x59f111f1U, 0x923f82a4U, 0xab1c5ed5U,
@@ -148,43 +158,198 @@ static void sha256_update(sha256_context *context, const uint8_t *data, size_t l
     }
 }
 
-static void sha256_final(sha256_context *context, uint8_t hash[SHA256_BINARY_LENGTH]) {
-    size_t index = context->data_length;
+static int u64_to_ascii(unsigned long long value, char buffer[NONCE_BUFFER_LENGTH]) {
+    char reversed[NONCE_BUFFER_LENGTH];
+    int length = 0;
 
-    context->data[index++] = 0x80;
+    do {
+        reversed[length++] = (char)('0' + (value % 10));
+        value /= 10;
+    } while (value != 0);
 
-    if (index > 56) {
-        while (index < 64) {
-            context->data[index++] = 0x00;
+    for (int index = 0; index < length; index++) {
+        buffer[index] = reversed[length - index - 1];
+    }
+
+    return length;
+}
+
+static int increment_ascii_decimal(
+    char buffer[NONCE_BUFFER_LENGTH],
+    int *length,
+    unsigned long long increment
+) {
+    int index = *length - 1;
+    int changed_index = *length;
+    unsigned long long carry = increment;
+
+    while (index >= 0 && carry > 0) {
+        unsigned long long sum = (unsigned long long)(buffer[index] - '0') + (carry % 10);
+        carry /= 10;
+        if (sum >= 10) {
+            sum -= 10;
+            carry += 1;
         }
-        sha256_transform(context, context->data);
-        index = 0;
+        buffer[index] = (char)('0' + sum);
+        changed_index = index;
+        index -= 1;
     }
 
-    while (index < 56) {
-        context->data[index++] = 0x00;
+    if (carry == 0) {
+        return changed_index < *length ? changed_index : *length - 1;
     }
 
-    context->bit_length += (uint64_t)context->data_length * 8;
-    context->data[63] = (uint8_t)(context->bit_length);
-    context->data[62] = (uint8_t)(context->bit_length >> 8);
-    context->data[61] = (uint8_t)(context->bit_length >> 16);
-    context->data[60] = (uint8_t)(context->bit_length >> 24);
-    context->data[59] = (uint8_t)(context->bit_length >> 32);
-    context->data[58] = (uint8_t)(context->bit_length >> 40);
-    context->data[57] = (uint8_t)(context->bit_length >> 48);
-    context->data[56] = (uint8_t)(context->bit_length >> 56);
-    sha256_transform(context, context->data);
+    char prefix[NONCE_BUFFER_LENGTH];
+    int prefix_length = 0;
+    while (carry > 0) {
+        prefix[prefix_length++] = (char)('0' + (carry % 10));
+        carry /= 10;
+    }
+
+    if (*length + prefix_length >= NONCE_BUFFER_LENGTH) {
+        return -1;
+    }
+
+    memmove(buffer + prefix_length, buffer, (size_t)(*length));
+    for (int prefix_index = 0; prefix_index < prefix_length; prefix_index++) {
+        buffer[prefix_index] = prefix[prefix_length - prefix_index - 1];
+    }
+    *length += prefix_length;
+
+    return 0;
+}
+
+static void write_sha256_length(uint8_t block[64], uint64_t total_bit_length) {
+    block[63] = (uint8_t)(total_bit_length);
+    block[62] = (uint8_t)(total_bit_length >> 8);
+    block[61] = (uint8_t)(total_bit_length >> 16);
+    block[60] = (uint8_t)(total_bit_length >> 24);
+    block[59] = (uint8_t)(total_bit_length >> 32);
+    block[58] = (uint8_t)(total_bit_length >> 40);
+    block[57] = (uint8_t)(total_bit_length >> 48);
+    block[56] = (uint8_t)(total_bit_length >> 56);
+}
+
+static void prepare_nonce_blocks(
+    const sha256_context *prefix_context,
+    const char *nonce_buffer,
+    int nonce_length,
+    prepared_nonce_blocks *prepared
+) {
+    size_t prefix_remainder = prefix_context->data_length;
+    size_t first_available = 64 - prefix_remainder;
+    size_t first_nonce_length = (size_t)nonce_length;
+    uint64_t total_bit_length =
+        prefix_context->bit_length + ((uint64_t)(prefix_remainder + (size_t)nonce_length) * 8);
+
+    memset(prepared, 0, sizeof(*prepared));
+    prepared->nonce_length = nonce_length;
+    prepared->first_nonce_offset = prefix_remainder;
+
+    memcpy(prepared->first_block, prefix_context->data, prefix_remainder);
+
+    if (first_nonce_length > first_available) {
+        first_nonce_length = first_available;
+    }
+    prepared->first_nonce_length = first_nonce_length;
+    prepared->second_nonce_length = (size_t)nonce_length - first_nonce_length;
+    prepared->uses_second_block = prepared->second_nonce_length > 0;
+
+    if (prepared->first_nonce_length > 0) {
+        memcpy(
+            prepared->first_block + prepared->first_nonce_offset,
+            nonce_buffer,
+            prepared->first_nonce_length
+        );
+    }
+    if (prepared->second_nonce_length > 0) {
+        memcpy(
+            prepared->second_block,
+            nonce_buffer + prepared->first_nonce_length,
+            prepared->second_nonce_length
+        );
+    }
+
+    if (prepared->uses_second_block) {
+        prepared->second_block[prepared->second_nonce_length] = 0x80;
+        write_sha256_length(prepared->second_block, total_bit_length);
+        return;
+    }
+
+    size_t total_suffix_offset = prefix_remainder + prepared->first_nonce_length;
+    if (total_suffix_offset < 56) {
+        prepared->first_block[total_suffix_offset] = 0x80;
+        write_sha256_length(prepared->first_block, total_bit_length);
+        return;
+    }
+
+    prepared->uses_second_block = 1;
+    prepared->first_block[total_suffix_offset] = 0x80;
+    write_sha256_length(prepared->second_block, total_bit_length);
+}
+
+static void update_prepared_nonce_blocks(
+    prepared_nonce_blocks *prepared,
+    const char *nonce_buffer,
+    int changed_index
+) {
+    if (changed_index < 0) {
+        changed_index = 0;
+    }
+
+    if ((size_t)changed_index < prepared->first_nonce_length) {
+        memcpy(
+            prepared->first_block + prepared->first_nonce_offset + (size_t)changed_index,
+            nonce_buffer + changed_index,
+            prepared->first_nonce_length - (size_t)changed_index
+        );
+        if (prepared->second_nonce_length > 0) {
+            memcpy(
+                prepared->second_block,
+                nonce_buffer + prepared->first_nonce_length,
+                prepared->second_nonce_length
+            );
+        }
+        return;
+    }
+
+    if (prepared->second_nonce_length > 0) {
+        size_t second_changed_index = (size_t)changed_index - prepared->first_nonce_length;
+        if (second_changed_index < prepared->second_nonce_length) {
+            memcpy(
+                prepared->second_block + second_changed_index,
+                nonce_buffer + changed_index,
+                prepared->second_nonce_length - second_changed_index
+            );
+        }
+    }
+}
+
+static void sha256_digest_prepared(
+    const sha256_context *prefix_context,
+    const prepared_nonce_blocks *prepared,
+    uint8_t hash[SHA256_BINARY_LENGTH]
+) {
+    sha256_context context;
+    size_t index;
+
+    memset(&context, 0, sizeof(context));
+    memcpy(context.state, prefix_context->state, sizeof(context.state));
+
+    sha256_transform(&context, prepared->first_block);
+    if (prepared->uses_second_block) {
+        sha256_transform(&context, prepared->second_block);
+    }
 
     for (index = 0; index < 4; index++) {
-        hash[index]      = (uint8_t)((context->state[0] >> (24 - index * 8)) & 0xFF);
-        hash[index + 4]  = (uint8_t)((context->state[1] >> (24 - index * 8)) & 0xFF);
-        hash[index + 8]  = (uint8_t)((context->state[2] >> (24 - index * 8)) & 0xFF);
-        hash[index + 12] = (uint8_t)((context->state[3] >> (24 - index * 8)) & 0xFF);
-        hash[index + 16] = (uint8_t)((context->state[4] >> (24 - index * 8)) & 0xFF);
-        hash[index + 20] = (uint8_t)((context->state[5] >> (24 - index * 8)) & 0xFF);
-        hash[index + 24] = (uint8_t)((context->state[6] >> (24 - index * 8)) & 0xFF);
-        hash[index + 28] = (uint8_t)((context->state[7] >> (24 - index * 8)) & 0xFF);
+        hash[index]      = (uint8_t)((context.state[0] >> (24 - index * 8)) & 0xFF);
+        hash[index + 4]  = (uint8_t)((context.state[1] >> (24 - index * 8)) & 0xFF);
+        hash[index + 8]  = (uint8_t)((context.state[2] >> (24 - index * 8)) & 0xFF);
+        hash[index + 12] = (uint8_t)((context.state[3] >> (24 - index * 8)) & 0xFF);
+        hash[index + 16] = (uint8_t)((context.state[4] >> (24 - index * 8)) & 0xFF);
+        hash[index + 20] = (uint8_t)((context.state[5] >> (24 - index * 8)) & 0xFF);
+        hash[index + 24] = (uint8_t)((context.state[6] >> (24 - index * 8)) & 0xFF);
+        hash[index + 28] = (uint8_t)((context.state[7] >> (24 - index * 8)) & 0xFF);
     }
 }
 
@@ -251,6 +416,7 @@ static PyObject *mine_pow(PyObject *Py_UNUSED(self), PyObject *args) {
     }
 
     sha256_context prefix_context;
+    prepared_nonce_blocks prepared_blocks;
     unsigned char digest[SHA256_BINARY_LENGTH];
     char hex_digest[SHA256_HEX_LENGTH + 1];
     char nonce_buffer[NONCE_BUFFER_LENGTH];
@@ -258,9 +424,12 @@ static PyObject *mine_pow(PyObject *Py_UNUSED(self), PyObject *args) {
     unsigned long long attempts = 0;
     int nonce_error = 0;
     int cancelled = 0;
+    int nonce_length = 0;
 
     sha256_init(&prefix_context);
     sha256_update(&prefix_context, (const uint8_t *)prefix, (size_t)prefix_length);
+    nonce_length = u64_to_ascii(nonce, nonce_buffer);
+    prepare_nonce_blocks(&prefix_context, nonce_buffer, nonce_length, &prepared_blocks);
 
     Py_BEGIN_ALLOW_THREADS
     while (true) {
@@ -272,25 +441,7 @@ static PyObject *mine_pow(PyObject *Py_UNUSED(self), PyObject *args) {
             break;
         }
 
-        int nonce_length = snprintf(
-            nonce_buffer,
-            NONCE_BUFFER_LENGTH,
-            "%llu",
-            nonce
-        );
-
-        if (nonce_length < 0 || nonce_length >= NONCE_BUFFER_LENGTH) {
-            nonce_error = 1;
-            break;
-        }
-
-        sha256_context nonce_context = prefix_context;
-        sha256_update(
-            &nonce_context,
-            (const uint8_t *)nonce_buffer,
-            (size_t)nonce_length
-        );
-        sha256_final(&nonce_context, digest);
+        sha256_digest_prepared(&prefix_context, &prepared_blocks, digest);
 
         if (has_leading_zero_bits(digest, difficulty_bits)) {
             break;
@@ -298,6 +449,17 @@ static PyObject *mine_pow(PyObject *Py_UNUSED(self), PyObject *args) {
 
         attempts += 1;
         nonce += nonce_step;
+        int previous_nonce_length = nonce_length;
+        int changed_index = increment_ascii_decimal(nonce_buffer, &nonce_length, nonce_step);
+        if (changed_index < 0 || nonce_length >= NONCE_BUFFER_LENGTH) {
+            nonce_error = 1;
+            break;
+        }
+        if (nonce_length != previous_nonce_length) {
+            prepare_nonce_blocks(&prefix_context, nonce_buffer, nonce_length, &prepared_blocks);
+        } else {
+            update_prepared_nonce_blocks(&prepared_blocks, nonce_buffer, changed_index);
+        }
 
         if (progress_interval > 0 && attempts > 0 && attempts % progress_interval == 0) {
             printf("\rTried %llu nonces...", nonce);
