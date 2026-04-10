@@ -11,7 +11,7 @@ from core.blockchain import Blockchain
 from core.hashing import sha256_block_hash
 from core.native_pow import request_pow_cancel
 from core.transaction import Transaction
-from core.utils.constants import GENESIS_PREVIOUS_HASH
+from core.utils.constants import GENESIS_PREVIOUS_HASH, MINING_REWARD_SENDER
 from network.p2p_server import P2PServer
 from node.message_store import load_messages, save_messages
 from node.storage import load_blockchain_state, save_blockchain_state
@@ -181,16 +181,13 @@ class Node:
         if self.blockchain is None:
             raise ValueError("A blockchain is required to mine.")
 
-        def report_progress(nonce: int) -> None:
-            print(f"\rTried {nonce:,} nonces...", end="", flush=True)
-
         print("Mining...", flush=True)
         block = self.blockchain.mine_pending_transactions(
             miner_address=self.wallet.address,
             description=description,
-            progress_callback=report_progress,
+            progress_callback=self._report_mining_progress,
         )
-        print("\r" + (" " * 40) + "\r", end="", flush=True)
+        self._clear_mining_progress()
         await self.broadcast_block(block)
         return block
 
@@ -222,28 +219,41 @@ class Node:
         try:
             while not self._automine_stop_requested:
                 self._current_automine_tip_hash = self.blockchain.main_tip_hash
+                print("Automining...", flush=True)
                 block = await asyncio.to_thread(
                     self.blockchain.mine_pending_transactions,
                     self.wallet.address,
                     self.automine_description,
+                    self._report_mining_progress,
                 )
+                self._clear_mining_progress()
                 await self.broadcast_block(block)
                 print(
                     f"\nAuto-mined block {block.block_hash[:12]} at height {block.block_id}",
                     flush=True,
                 )
         except ProofOfWorkCancelled:
+            self._clear_mining_progress()
             if not self._automine_stop_requested:
                 print("\nRestarting automine on newer chain head.", flush=True)
                 self.automine_task = asyncio.create_task(self._automine_loop())
                 return
         except ValueError as error:
+            self._clear_mining_progress()
             print(f"\nAutomine stopped: {error}", flush=True)
         finally:
             self._current_automine_tip_hash = None
             if self.automine_task is asyncio.current_task():
                 self.automine_task = None
             self._automine_stop_requested = False
+
+    @staticmethod
+    def _report_mining_progress(nonce: int) -> None:
+        print(f"\rTried {nonce:,} nonces...", end="", flush=True)
+
+    @staticmethod
+    def _clear_mining_progress() -> None:
+        print("\r" + (" " * 40) + "\r", end="", flush=True)
 
     async def interactive_console(self) -> None:
         print("Interactive mode enabled.")
@@ -259,6 +269,7 @@ class Node:
             'to broadcast a transaction, "mine [description]" to mine pending transactions, '
             '"automine [description]" to mine continuously, "stop" to stop automining, '
             '"blockchain" to print the canonical chain, "balance [address]" to print a balance, '
+            '"balances" to print all balances, '
             '"clear" to clear the screen, or "quit" to exit.'
         )
 
@@ -331,6 +342,10 @@ class Node:
 
             if line == "messages":
                 print(self.format_message_history())
+                continue
+
+            if line == "balances":
+                print(self.format_all_balances())
                 continue
 
             if line.startswith("balance"):
@@ -589,6 +604,29 @@ class Node:
         if self.blockchain is None:
             return "0.0"
         return str(self.blockchain.get_balance(address))
+
+    def format_all_balances(self) -> str:
+        if self.blockchain is None or not self.blockchain.blocks:
+            return "No balances available."
+
+        addresses: set[str] = set()
+        for block in self.blockchain.blocks:
+            for transaction in block.transactions:
+                if (
+                    transaction.sender
+                    and transaction.sender != MINING_REWARD_SENDER
+                ):
+                    addresses.add(transaction.sender)
+                if transaction.receiver:
+                    addresses.add(transaction.receiver)
+
+        if not addresses:
+            return "No wallet balances found."
+
+        lines = ["Balances:"]
+        for address in sorted(addresses):
+            lines.append(f"{address}: {self.get_balance(address)}")
+        return "\n".join(lines)
 
     def self_peer_address(self) -> str:
         return f"{self.host}:{self.port}"

@@ -94,6 +94,7 @@ automine [description]
 stop
 blockchain
 balance [address]
+balances
 clear
 quit
 ```

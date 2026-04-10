@@ -42,6 +42,7 @@ automine [description]
 stop
 blockchain
 balance [address]
+balances
 send <host:port> <json>
 clear
 quit
