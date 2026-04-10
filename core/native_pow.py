@@ -9,9 +9,13 @@ from pathlib import Path
 
 MODULE_NAME = "native_pow"
 ROOT_DIR = Path(__file__).resolve().parents[1]
-SOURCE_PATH = ROOT_DIR / "native" / "powmodule.c"
+NATIVE_DIR = ROOT_DIR / "native"
+SOURCE_PATH = NATIVE_DIR / "powmodule.c"
+METAL_SOURCE_PATH = NATIVE_DIR / "powmetal.m"
+METAL_HEADER_PATH = NATIVE_DIR / "powmetal.h"
 EXTENSION_PATH = ROOT_DIR / f"{MODULE_NAME}{sysconfig.get_config_var('EXT_SUFFIX')}"
 _native_pow_module = None
+DEFAULT_GPU_BATCH_SIZE = 16_384
 
 
 def mine_pow(
@@ -27,6 +31,30 @@ def mine_pow(
         difficulty_bits,
         start_nonce,
         progress_interval,
+        nonce_step,
+    )
+
+
+def gpu_available() -> bool:
+    module = _load_native_pow_module()
+    return bool(module.gpu_available())
+
+
+def mine_pow_gpu(
+    prefix: str,
+    difficulty_bits: int,
+    start_nonce: int = 0,
+    progress_interval: int = 0,
+    batch_size: int = DEFAULT_GPU_BATCH_SIZE,
+    nonce_step: int = 1,
+) -> tuple[int, str, bool]:
+    module = _load_native_pow_module()
+    return module.mine_pow_gpu(
+        prefix,
+        difficulty_bits,
+        start_nonce,
+        progress_interval,
+        batch_size,
         nonce_step,
     )
 
@@ -69,7 +97,11 @@ def _extension_needs_rebuild() -> bool:
     if not EXTENSION_PATH.exists():
         return True
 
-    return SOURCE_PATH.stat().st_mtime > EXTENSION_PATH.stat().st_mtime
+    source_paths = [SOURCE_PATH]
+    if platform.system() == "Darwin":
+        source_paths.extend([METAL_SOURCE_PATH, METAL_HEADER_PATH])
+
+    return any(path.stat().st_mtime > EXTENSION_PATH.stat().st_mtime for path in source_paths)
 
 
 def _build_native_pow_extension() -> None:
@@ -89,6 +121,7 @@ def _build_native_pow_extension() -> None:
             "-Wall",
             "-Wextra",
             "-std=c11",
+            "-fobjc-arc",
             "-bundle",
             "-undefined",
             "dynamic_lookup",
@@ -103,9 +136,14 @@ def _build_native_pow_extension() -> None:
             compile_command.extend(["-I", platform_include_dir])
         compile_command.extend(
             [
+                str(METAL_SOURCE_PATH),
                 "-o",
                 str(EXTENSION_PATH),
                 str(SOURCE_PATH),
+                "-framework",
+                "Foundation",
+                "-framework",
+                "Metal",
             ]
         )
     elif system == "Linux":

@@ -3,7 +3,9 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable
 
+from core.native_pow import gpu_available as native_gpu_available
 from core.native_pow import mine_pow as native_mine_pow
+from core.native_pow import mine_pow_gpu as native_mine_pow_gpu
 from core.native_pow import request_pow_cancel
 from core.native_pow import reset_pow_cancel
 from core.serialization import serialize_block_prefix
@@ -85,30 +87,54 @@ def proof_of_work(
         raise ValueError("Native proof-of-work only supports core.hashing.sha256_block_hash.")
 
     prefix = serialize_block_prefix(block)
-    worker_count = max(1, os.cpu_count() or 1)
     native_progress_interval = progress_interval if progress_callback is not None else 0
     reset_pow_cancel()
+    worker_count = max(1, os.cpu_count() or 1)
+    gpu_enabled = native_gpu_available()
+    total_partitions = worker_count + (1 if gpu_enabled else 0)
+
+    def mine_gpu() -> tuple[int, str, bool]:
+        return native_mine_pow_gpu(
+            prefix,
+            difficulty_bits,
+            block.nonce + worker_count,
+            0,
+            nonce_step=total_partitions,
+        )
 
     def mine_range(worker_index: int) -> tuple[int, str, bool]:
         worker_progress_interval = 0
         if native_progress_interval > 0 and worker_index == 0:
-            worker_progress_interval = native_progress_interval * worker_count
+            worker_progress_interval = native_progress_interval * total_partitions
         return native_mine_pow(
             prefix,
             difficulty_bits,
             block.nonce + worker_index,
             worker_progress_interval,
-            worker_count,
+            total_partitions,
         )
 
     winner: tuple[int, str] | None = None
     cancelled_workers = 0
+    gpu_failed = False
 
-    with ThreadPoolExecutor(max_workers=worker_count) as executor:
-        futures = [executor.submit(mine_range, worker_index) for worker_index in range(worker_count)]
+    with ThreadPoolExecutor(max_workers=worker_count + (1 if gpu_enabled else 0)) as executor:
+        future_labels = {
+            executor.submit(mine_range, worker_index): "cpu"
+            for worker_index in range(worker_count)
+        }
+        if gpu_enabled:
+            future_labels[executor.submit(mine_gpu)] = "gpu"
+
         try:
-            for future in as_completed(futures):
-                nonce, block_hash, cancelled = future.result()
+            for future in as_completed(future_labels):
+                try:
+                    nonce, block_hash, cancelled = future.result()
+                except RuntimeError:
+                    if future_labels[future] == "gpu":
+                        gpu_failed = True
+                        continue
+                    raise
                 if cancelled:
                     cancelled_workers += 1
                     continue
@@ -118,10 +144,15 @@ def proof_of_work(
                 break
         finally:
             request_pow_cancel()
-            for future in futures:
-                future.result()
+            for future, label in future_labels.items():
+                try:
+                    future.result()
+                except RuntimeError:
+                    if label != "gpu":
+                        raise
 
-    if winner is None or cancelled_workers == worker_count:
+    expected_cancelled = worker_count + (0 if gpu_failed or not gpu_enabled else 1)
+    if winner is None or cancelled_workers == expected_cancelled:
         raise ProofOfWorkCancelled("Proof of work was cancelled.")
 
     block.nonce, block.block_hash = winner

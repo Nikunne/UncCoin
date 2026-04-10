@@ -12,10 +12,15 @@
 #include <stdatomic.h>
 #endif
 
+#ifdef __APPLE__
+#include "powmetal.h"
+#endif
+
 #define SHA256_HEX_LENGTH 64
 #define SHA256_BINARY_LENGTH 32
 #define NONCE_BUFFER_LENGTH 32
 #define CANCEL_CHECK_INTERVAL 1024
+#define DEFAULT_GPU_BATCH_SIZE 16384
 
 #if defined(_MSC_VER) && !defined(__clang__)
 static volatile LONG cancel_requested = 0;
@@ -212,6 +217,10 @@ static void digest_to_hex(const unsigned char *digest, char *hex_output) {
     hex_output[SHA256_HEX_LENGTH] = '\0';
 }
 
+int pow_cancel_requested(void) {
+    return LOAD_CANCEL_REQUESTED();
+}
+
 static PyObject *mine_pow(PyObject *Py_UNUSED(self), PyObject *args) {
     const char *prefix = NULL;
     Py_ssize_t prefix_length = 0;
@@ -317,6 +326,66 @@ static PyObject *reset_cancel(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(arg
     Py_RETURN_NONE;
 }
 
+static PyObject *gpu_available(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args)) {
+#ifdef __APPLE__
+    if (metal_pow_is_available()) {
+        Py_RETURN_TRUE;
+    }
+#endif
+    Py_RETURN_FALSE;
+}
+
+static PyObject *mine_pow_gpu(PyObject *Py_UNUSED(self), PyObject *args) {
+    const char *prefix = NULL;
+    Py_ssize_t prefix_length = 0;
+    int difficulty_bits = 0;
+    unsigned long long start_nonce = 0;
+    unsigned long long progress_interval = 0;
+    unsigned long long batch_size = DEFAULT_GPU_BATCH_SIZE;
+    unsigned long long nonce_step = 1;
+    unsigned long long nonce = 0;
+    char hex_digest[SHA256_HEX_LENGTH + 1];
+    char error_message[256];
+    int cancelled = 0;
+
+    if (!PyArg_ParseTuple(
+            args,
+            "s#i|KKKK",
+            &prefix,
+            &prefix_length,
+            &difficulty_bits,
+            &start_nonce,
+            &progress_interval,
+            &batch_size,
+            &nonce_step)) {
+        return NULL;
+    }
+
+#ifdef __APPLE__
+    if (!metal_mine_pow(
+            prefix,
+            (size_t)prefix_length,
+            difficulty_bits,
+            start_nonce,
+            progress_interval,
+            batch_size,
+            nonce_step,
+            &nonce,
+            hex_digest,
+            &cancelled,
+            error_message,
+            sizeof(error_message))) {
+        PyErr_SetString(PyExc_RuntimeError, error_message);
+        return NULL;
+    }
+
+    return Py_BuildValue("Ksi", nonce, hex_digest, cancelled);
+#else
+    PyErr_SetString(PyExc_RuntimeError, "GPU proof-of-work is only supported on macOS Metal.");
+    return NULL;
+#endif
+}
+
 static PyMethodDef NativePowMethods[] = {
     {
         "mine_pow",
@@ -335,6 +404,18 @@ static PyMethodDef NativePowMethods[] = {
         reset_cancel,
         METH_NOARGS,
         "Reset the proof-of-work cancellation flag."
+    },
+    {
+        "gpu_available",
+        gpu_available,
+        METH_NOARGS,
+        "Return whether the Metal proof-of-work backend is available."
+    },
+    {
+        "mine_pow_gpu",
+        mine_pow_gpu,
+        METH_VARARGS,
+        "Run proof of work on the GPU and return the winning nonce and SHA-256 hash."
     },
     {NULL, NULL, 0, NULL}
 };
