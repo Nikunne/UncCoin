@@ -44,25 +44,25 @@ python3 -m wallet.cli show --name <wallet-name>
 Run a node with your wallet:
 
 ```bash
-./scripts/run_node.sh <wallet-name> <port>
+./scripts/run.sh <wallet-name> <port>
 ```
 
 Example:
 
 ```bash
-./scripts/run_node.sh mywallet 9000
+./scripts/run.sh mywallet 9000
 ```
 
 To connect to another node:
 
 ```bash
-./scripts/run_node.sh <wallet-name> <port> <peer-host:peer-port>
+./scripts/run.sh <wallet-name> <port> <peer-host:peer-port>
 ```
 
 Example:
 
 ```bash
-./scripts/run_node.sh mywallet 9001 127.0.0.1:9000
+./scripts/run.sh mywallet 9001 127.0.0.1:9000
 ```
 
 ## 5. Use the Interactive CLI

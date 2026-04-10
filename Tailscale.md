@@ -81,22 +81,20 @@ python3 -m node.cli --host 0.0.0.0 --wallet-name <wallet-name> --port 9000
 Example second node connecting to the first over Tailscale:
 
 ```bash
-./scripts/run_node.sh <wallet-name> 9001 <peer-tailscale-ip>:9000
+./scripts/run.sh <wallet-name> 9001 <peer-tailscale-ip>:9000
 ```
 
 Example third node:
 
 ```bash
-./scripts/run_node.sh <wallet-name> 9002 <peer-tailscale-ip>:9000
+./scripts/run.sh <wallet-name> 9002 <peer-tailscale-ip>:9000
 ```
 
-For the first node, the generic script version is:
+The script also works for the first node:
 
 ```bash
-python3 -m node.cli --host 0.0.0.0 --wallet-name <wallet-name> --port 9000
+./scripts/run.sh <wallet-name> 9000
 ```
-
-`run_node.sh` currently does not expose `--host`, so for the machine that should accept inbound Tailscale connections you should use the direct CLI form above.
 
 ## 6. Use the Node CLI
 

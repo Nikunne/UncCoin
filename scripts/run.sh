@@ -13,7 +13,7 @@ shift 2
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT_DIR"
 
-ARGS=(python3 -m node.cli --wallet-name "$WALLET_NAME" --port "$PORT")
+ARGS=(python3 -m node.cli --host 0.0.0.0 --wallet-name "$WALLET_NAME" --port "$PORT")
 
 for PEER in "$@"; do
   ARGS+=(--peer "$PEER")
