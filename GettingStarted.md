@@ -39,6 +39,12 @@ Inspect it with:
 python3 -m wallet.cli show --name <wallet-name>
 ```
 
+Or use the shortcut:
+
+```bash
+./scripts/wallet.sh <wallet-name>
+```
+
 ## 4. Start a Node
 
 Run a node with your wallet:
@@ -53,19 +59,23 @@ Example:
 ./scripts/run.sh mywallet 9000
 ```
 
-To connect to another node:
+## 5. Connect to Other Nodes
 
-```bash
-./scripts/run.sh <wallet-name> <port> <peer-host:peer-port>
+After the node is running, connect from the interactive prompt:
+
+```text
+add-peer <host:port>
 ```
 
 Example:
 
-```bash
-./scripts/run.sh mywallet 9001 127.0.0.1:9000
+```text
+add-peer 127.0.0.1:9000
+sync
+peers
 ```
 
-## 5. Use the Interactive CLI
+## 6. Use the Interactive CLI
 
 Useful commands:
 
@@ -94,7 +104,7 @@ Notes:
 - `mine` mines one block.
 - `automine` keeps mining until `stop` is entered.
 
-## 6. Optional Local Shortcuts
+## 7. Optional Local Shortcuts
 
 For local testing only, the repo also includes fixed-name wrappers:
 
@@ -106,7 +116,7 @@ make 9002
 
 These are convenience targets for one-machine testing and are not the recommended way to run real user wallets.
 
-## Persistence
+## 8. Persistence
 
 On shutdown, the node persists:
 
@@ -115,6 +125,6 @@ On shutdown, the node persists:
 
 That state is keyed by wallet address and reloaded automatically on startup with the same wallet.
 
-## Current Scope
+## 9. Current Scope
 
 UncCoin is a toy cryptocurrency for learning and experimentation. It is not hardened for real adversarial deployment or real-value use.
