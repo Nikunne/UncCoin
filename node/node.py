@@ -4,6 +4,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from typing import Callable
 
 from config import DEFAULT_DIFFICULTY_BITS
 from core.block import Block, ProofOfWorkCancelled, proof_of_work
@@ -36,6 +37,7 @@ class Node:
     message_history: list[dict] = field(default_factory=list, init=False)
     message_ids: set[str] = field(default_factory=set, init=False)
     wallet_aliases: dict[str, str] = field(default_factory=dict, init=False)
+    network_notifications_muted: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         if self.blockchain is None:
@@ -52,6 +54,7 @@ class Node:
             on_chain_summary=self._handle_chain_summary,
             on_chain_request=self._handle_chain_request,
             on_chain_response=self._handle_chain_response,
+            on_notification=self._print_network_notification,
         )
 
     async def start(self) -> None:
@@ -267,6 +270,7 @@ class Node:
             '"discover" to ask peers for more peers, "sync" to request the latest chain from '
             'connected peers, "add-peer host:port" to connect manually, '
             '"alias wallet-id alias" to store a local wallet alias, '
+            '"mute" or "unmute" to control incoming network notifications, '
             '"localself" to print this node\'s local address, '
             '"tx receiver amount fee" '
             '"msg wallet content" to send a wallet message, '
@@ -274,7 +278,7 @@ class Node:
             'to broadcast a transaction, "mine [description]" to mine pending transactions, '
             '"automine [description]" to mine continuously, "stop" to stop automining, '
             '"blockchain" to print the canonical chain, "balance [address]" to print a balance, '
-            '"balances" to print all balances, '
+            '"balances [>amount|<amount]" to print filtered balances, '
             '"clear" to clear the screen, or "quit" to exit.'
         )
 
@@ -319,6 +323,16 @@ class Node:
                 print(f"Requested chain sync from {peer_count} peer(s).")
                 continue
 
+            if line == "mute":
+                self.network_notifications_muted = True
+                print("Incoming network notifications muted.")
+                continue
+
+            if line == "unmute":
+                self.network_notifications_muted = False
+                print("Incoming network notifications unmuted.")
+                continue
+
             if line == "localself":
                 print(self.self_peer_address())
                 continue
@@ -361,8 +375,11 @@ class Node:
                 print(self.format_message_history())
                 continue
 
-            if line == "balances":
-                print(self.format_all_balances())
+            if line.startswith("balances"):
+                try:
+                    print(self.format_all_balances(line[len("balances"):].strip()))
+                except ValueError as error:
+                    print(f"Invalid balances command: {error}")
                 continue
 
             if line.startswith("balance"):
@@ -498,7 +515,7 @@ class Node:
                 accepted_blocks += 1
             elif status == "orphaned":
                 orphaned_blocks += 1
-                print(
+                self._print_network_notification(
                     f"Deferred synced block {block.block_hash[:12]}: "
                     f"{reason or 'waiting for parent'}"
                 )
@@ -506,12 +523,12 @@ class Node:
                 duplicate_blocks += 1
             else:
                 rejected_blocks += 1
-                print(
+                self._print_network_notification(
                     f"Rejected synced block {block.block_hash[:12]}: "
                     f"{reason or 'unknown reason'}"
                 )
 
-        print(
+        self._print_network_notification(
             "Chain sync chunk processed: "
             f"accepted {accepted_blocks}, duplicates {duplicate_blocks}, "
             f"orphans {orphaned_blocks}, rejected {rejected_blocks}."
@@ -580,9 +597,9 @@ class Node:
                     "timestamp": timestamp,
                 }
             )
-            print(
+            self._print_network_notification(
                 f"\nMessage from {self.format_wallet_reference(sender)}: {content}",
-                flush=True,
+                force=True,
             )
 
         return True
@@ -644,7 +661,7 @@ class Node:
             return "0.0"
         return str(self.blockchain.get_balance(address))
 
-    def format_all_balances(self) -> str:
+    def format_all_balances(self, filter_expression: str = "") -> str:
         if self.blockchain is None or not self.blockchain.blocks:
             return "No balances available."
 
@@ -662,11 +679,15 @@ class Node:
         if not addresses:
             return "No wallet balances found."
 
+        comparison = self._parse_balance_filter(filter_expression)
         lines = ["Balances:"]
         for address in sorted(addresses, key=self._wallet_balance_sort_key):
-            lines.append(
-                f"{self.format_wallet_reference(address)}: {self.get_balance(address)}"
-            )
+            balance = self.blockchain.get_balance(address)
+            if comparison is not None and not comparison(balance):
+                continue
+            lines.append(f"{self.format_wallet_reference(address)}: {balance}")
+        if len(lines) == 1:
+            return "No wallet balances matched the filter."
         return "\n".join(lines)
 
     def self_peer_address(self) -> str:
@@ -742,6 +763,29 @@ class Node:
             *self._wallet_sort_key(wallet_address),
         )
 
+    def _parse_balance_filter(
+        self,
+        filter_expression: str,
+    ) -> Callable[[Decimal], bool] | None:
+        if not filter_expression:
+            return None
+
+        if filter_expression[0] not in {">", "<"}:
+            raise ValueError("Use balances, balances >amount, or balances <amount.")
+
+        threshold_text = filter_expression[1:].strip()
+        if not threshold_text:
+            raise ValueError("Balance filter requires an amount.")
+
+        try:
+            threshold = Decimal(threshold_text)
+        except InvalidOperation as error:
+            raise ValueError("Balance filter amount must be a valid decimal.") from error
+
+        if filter_expression[0] == ">":
+            return lambda balance: balance > threshold
+        return lambda balance: balance < threshold
+
     def _accept_or_store_block(self, block: Block) -> tuple[str, str | None]:
         assert self.blockchain is not None
 
@@ -784,7 +828,7 @@ class Node:
                 if status == "accepted":
                     self.orphan_block_hashes.discard(orphan_block.block_hash)
                     self._cancel_stale_automine_if_needed()
-                    print(
+                    self._print_network_notification(
                         f"Accepted orphan block {orphan_block.block_hash[:12]} "
                         f"at height {orphan_block.block_id}"
                     )
@@ -795,7 +839,7 @@ class Node:
                     self.orphan_block_hashes.discard(orphan_block.block_hash)
                 else:
                     self.orphan_block_hashes.discard(orphan_block.block_hash)
-                    print(
+                    self._print_network_notification(
                         f"Rejected orphan block {orphan_block.block_hash[:12]}: "
                         f"{result.reason or 'unknown reason'}"
                     )
@@ -852,3 +896,8 @@ class Node:
         if self.wallet is None:
             return None
         return self.wallet.address
+
+    def _print_network_notification(self, message: str, force: bool = False) -> None:
+        if self.network_notifications_muted and not force:
+            return
+        print(message, flush=True)

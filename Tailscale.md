@@ -108,6 +108,8 @@ sync
 localself
 add-peer <host:port>
 alias <wallet-id> <alias>
+mute
+unmute
 tx <receiver> <amount> <fee>
 msg <wallet> <content>
 messages
@@ -117,6 +119,8 @@ stop
 blockchain
 balance [address]
 balances
+balances >100
+balances <50
 clear
 quit
 ```

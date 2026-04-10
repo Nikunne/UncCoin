@@ -9,3 +9,4 @@ state/msgs/*
 state/aliases/*
 !state/aliases/.gitkeep
 scripts/run_auto.sh
+scripts/run_auto_parallel.sh

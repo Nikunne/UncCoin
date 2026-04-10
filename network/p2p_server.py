@@ -28,6 +28,7 @@ class P2PServer:
     on_chain_summary: Callable[[], tuple[str | None, int]] | None = None
     on_chain_request: Callable[[], list[Block]] | None = None
     on_chain_response: Callable[[list[Block]], dict[str, int] | None] | None = None
+    on_notification: Callable[[str], None] | None = None
     peers: set[PeerAddress] = field(default_factory=set)
     seen_transaction_ids: set[str] = field(default_factory=set)
     seen_block_hashes: set[str] = field(default_factory=set)
@@ -44,7 +45,7 @@ class P2PServer:
             self.host,
             self.port,
         )
-        print(f"P2P server listening on {self.host}:{self.port}")
+        self._notify(f"P2P server listening on {self.host}:{self.port}")
 
     async def serve_forever(self) -> None:
         if self.server is None:
@@ -79,7 +80,7 @@ class P2PServer:
 
         await self._send_message(writer, self._create_handshake_message())
         asyncio.create_task(self._read_messages(reader, writer, peer))
-        print(f"Connected to peer {host}:{port}")
+        self._notify(f"Connected to peer {host}:{port}")
 
     async def broadcast(self, message: dict) -> None:
         await self._broadcast_to_peers(message)
@@ -226,7 +227,7 @@ class P2PServer:
         peer = PeerAddress(host=peer_info[0], port=peer_info[1])
         self.peers.add(peer)
         self.active_connections[peer] = writer
-        print(f"Accepted peer connection from {peer.host}:{peer.port}")
+        self._notify(f"Accepted peer connection from {peer.host}:{peer.port}")
         await self._send_message(writer, self._create_handshake_message())
 
         await self._read_messages(reader, writer, peer)
@@ -249,7 +250,7 @@ class P2PServer:
             self.active_connections.pop(peer, None)
             writer.close()
             await writer.wait_closed()
-            print(f"Disconnected from peer {peer.host}:{peer.port}")
+            self._notify(f"Disconnected from peer {peer.host}:{peer.port}")
 
     async def _handle_message(self, message: dict, peer: PeerAddress) -> PeerAddress:
         message_type = message.get("type", "unknown")
@@ -265,7 +266,7 @@ class P2PServer:
             writer = self.active_connections.pop(peer, None)
             if writer is not None:
                 self.active_connections[advertised_peer] = writer
-            print(
+            self._notify(
                 f"Handshake received from {advertised_host}:{advertised_port} "
                 f"(height {remote_height}, tip {self._short_hash(remote_tip_hash)})"
             )
@@ -281,7 +282,7 @@ class P2PServer:
                     advertised_port,
                     start_height=max(start_height, 0),
                 )
-                print(
+                self._notify(
                     f"Requesting chain sync from {advertised_host}:{advertised_port} "
                     f"after handshake starting at height {max(start_height, 0)}"
                 )
@@ -289,7 +290,7 @@ class P2PServer:
 
         if message_type == "peer_request":
             await self._send_peer_list(peer)
-            print(f"Peer list requested by {peer.host}:{peer.port}")
+            self._notify(f"Peer list requested by {peer.host}:{peer.port}")
             return peer
 
         if message_type == "peer_list":
@@ -302,17 +303,17 @@ class P2PServer:
                     try:
                         await self.connect_to_peer(discovered_peer.host, discovered_peer.port)
                     except OSError:
-                        print(
+                        self._notify(
                             "Failed to connect to discovered peer "
                             f"{discovered_peer.host}:{discovered_peer.port}"
                         )
-            print(f"Peer list received from {peer.host}:{peer.port}")
+            self._notify(f"Peer list received from {peer.host}:{peer.port}")
             return peer
 
         if message_type == "chain_request":
             start_height = max(int(message.get("start_height", 0)), 0)
             await self._send_chain_chunk(peer, start_height)
-            print(
+            self._notify(
                 f"Chain chunk requested by {peer.host}:{peer.port} "
                 f"from height {start_height}"
             )
@@ -337,7 +338,7 @@ class P2PServer:
                 if self.on_chain_response is not None
                 else None
             )
-            print(
+            self._notify(
                 f"Chain chunk received from {peer.host}:{peer.port} "
                 f"({len(blocks)} blocks starting at height {start_height})"
             )
@@ -353,7 +354,7 @@ class P2PServer:
                 and orphaned_blocks > 0
             ):
                 await self.request_chain(peer.host, peer.port, start_height=0)
-                print(
+                self._notify(
                     f"Chain chunk from {peer.host}:{peer.port} did not attach. "
                     "Retrying sync from genesis."
                 )
@@ -361,7 +362,7 @@ class P2PServer:
 
             if remote_height > local_height and not done:
                 if accepted_blocks == 0 and rejected_blocks > 0 and orphaned_blocks == 0:
-                    print(
+                    self._notify(
                         f"Chain sync from {peer.host}:{peer.port} made no progress at "
                         f"height {start_height}. Stopping automatic sync."
                     )
@@ -372,7 +373,7 @@ class P2PServer:
                     peer.port,
                     start_height=max(next_start_height, 0),
                 )
-                print(
+                self._notify(
                     f"Requesting next chain chunk from {peer.host}:{peer.port} "
                     f"starting at height {max(next_start_height, 0)}"
                 )
@@ -383,13 +384,13 @@ class P2PServer:
             transaction_id = message.get("tx_id", sha256_transaction_hash(transaction))
 
             if transaction_id in self.seen_transaction_ids:
-                print(f"Ignoring duplicate transaction {transaction_id[:12]}")
+                self._notify(f"Ignoring duplicate transaction {transaction_id[:12]}")
                 return peer
 
             if self.on_transaction is not None:
                 accepted, reason = self.on_transaction(transaction)
                 if not accepted:
-                    print(
+                    self._notify(
                         f"Rejected transaction {transaction_id[:12]} "
                         f"from {peer.host}:{peer.port}: {reason or 'unknown reason'}"
                     )
@@ -397,7 +398,7 @@ class P2PServer:
 
             self.seen_transaction_ids.add(transaction_id)
 
-            print(
+            self._notify(
                 "Received transaction "
                 f"{transaction_id[:12]} from {peer.host}:{peer.port}: "
                 f"{transaction.sender} -> {transaction.receiver} "
@@ -411,7 +412,7 @@ class P2PServer:
             block_hash = message.get("block_hash", block.block_hash)
 
             if block_hash in self.seen_block_hashes:
-                print(f"Ignoring duplicate block {block_hash[:12]}")
+                self._notify(f"Ignoring duplicate block {block_hash[:12]}")
                 return peer
 
             block_status, reason = (
@@ -421,7 +422,7 @@ class P2PServer:
             )
             if block_status == "accepted":
                 self.seen_block_hashes.add(block_hash)
-                print(
+                self._notify(
                     f"Received block {block_hash[:12]} from {peer.host}:{peer.port} "
                     f"at height {block.block_id}"
                 )
@@ -430,7 +431,7 @@ class P2PServer:
 
             if block_status == "orphaned":
                 self.seen_block_hashes.add(block_hash)
-                print(
+                self._notify(
                     f"Stored orphan block {block_hash[:12]} from {peer.host}:{peer.port} "
                     f"at height {block.block_id}: {reason or 'waiting for parent'}"
                 )
@@ -438,13 +439,13 @@ class P2PServer:
 
             if block_status == "duplicate":
                 self.seen_block_hashes.add(block_hash)
-                print(
+                self._notify(
                     f"Ignoring duplicate block {block_hash[:12]}: "
                     f"{reason or 'already known'}"
                 )
                 return peer
 
-            print(
+            self._notify(
                 f"Rejected block {block_hash[:12]} from {peer.host}:{peer.port}: "
                 f"{reason or 'unknown reason'}"
             )
@@ -455,18 +456,18 @@ class P2PServer:
             message_id = message.get("message_id", _wallet_message_id(wallet_message))
 
             if message_id in self.seen_wallet_message_ids:
-                print(f"Ignoring duplicate message {message_id[:12]}")
+                self._notify(f"Ignoring duplicate message {message_id[:12]}")
                 return peer
 
             if self.on_wallet_message is not None and not self.on_wallet_message(wallet_message):
-                print(f"Rejected message {message_id[:12]} from {peer.host}:{peer.port}")
+                self._notify(f"Rejected message {message_id[:12]} from {peer.host}:{peer.port}")
                 return peer
 
             self.seen_wallet_message_ids.add(message_id)
             await self._broadcast_to_peers(message, exclude_peer=peer)
             return peer
 
-        print(f"Received {message_type} from {peer.host}:{peer.port}: {message}")
+        self._notify(f"Received {message_type} from {peer.host}:{peer.port}: {message}")
         return peer
 
     async def _send_peer_list(self, peer: PeerAddress) -> None:
@@ -555,6 +556,12 @@ class P2PServer:
     ) -> None:
         writer.write(json.dumps(message).encode("utf-8") + b"\n")
         await writer.drain()
+
+    def _notify(self, message: str) -> None:
+        if self.on_notification is not None:
+            self.on_notification(message)
+            return
+        print(message)
 
 
 def _wallet_message_id(wallet_message: dict) -> str:
