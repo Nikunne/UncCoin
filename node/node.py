@@ -4,6 +4,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 from typing import Callable
 
 from config import DEFAULT_DIFFICULTY_BITS
@@ -50,6 +51,8 @@ class Node:
     autosend_target: str | None = field(default=None, init=False)
     autosend_last_seen_balance: Decimal = field(default=Decimal("0.0"), init=False)
     autosend_task: asyncio.Task | None = field(default=None, init=False)
+
+    REPO_ROOT = Path(__file__).resolve().parent.parent
 
     def __post_init__(self) -> None:
         if self.blockchain is None:
@@ -309,6 +312,7 @@ class Node:
             '"automine [description]" to mine continuously, "stop" to stop automining, '
             '"blockchain" to print the canonical chain, "balance [address]" to print a balance, '
             '"balances [>amount|<amount]" to print filtered balances, '
+            '"txtbalances <relative-path>" to write balances to a text file, '
             '"clear" to clear the screen, or "quit" to exit.'
         )
 
@@ -428,6 +432,16 @@ class Node:
                     print(self.format_all_balances(line[len("balances"):].strip()))
                 except ValueError as error:
                     print(f"Invalid balances command: {error}")
+                continue
+
+            if line.startswith("txtbalances"):
+                try:
+                    path = self.write_all_balances_to_file(
+                        line[len("txtbalances"):].strip()
+                    )
+                    print(f"Balances written to {path}")
+                except ValueError as error:
+                    print(f"Invalid txtbalances command: {error}")
                 continue
 
             if line.startswith("balance"):
@@ -738,6 +752,25 @@ class Node:
         if len(lines) == 1:
             return "No wallet balances matched the filter."
         return "\n".join(lines)
+
+    def write_all_balances_to_file(self, relative_path: str) -> Path:
+        if not relative_path:
+            raise ValueError("Use txtbalances <relative-path>.")
+
+        output_path = Path(relative_path)
+        if output_path.is_absolute():
+            raise ValueError("txtbalances requires a relative path.")
+
+        resolved_path = (self.REPO_ROOT / output_path).resolve()
+        if not resolved_path.is_relative_to(self.REPO_ROOT.resolve()):
+            raise ValueError("txtbalances path must stay within the project root.")
+
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        resolved_path.write_text(
+            f"{self.format_all_balances()}\n",
+            encoding="utf-8",
+        )
+        return resolved_path.relative_to(self.REPO_ROOT)
 
     def self_peer_address(self) -> str:
         return f"{self.host}:{self.port}"

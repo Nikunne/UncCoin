@@ -50,6 +50,7 @@ balance [address]
 balances
 balances >100
 balances <50
+txtbalances <relative-path>
 send <host:port> <json>
 clear
 quit

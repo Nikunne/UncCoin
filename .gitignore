@@ -11,3 +11,4 @@ state/aliases/*
 scripts/run_auto.sh
 scripts/run_auto_parallel.sh
 /.idea
+*.txt
