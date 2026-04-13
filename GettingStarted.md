@@ -103,6 +103,7 @@ balances
 balances >100
 balances <50
 txtbalances <relative-path>
+txtblockchain <relative-path>
 clear
 quit
 ```

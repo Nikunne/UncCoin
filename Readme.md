@@ -51,6 +51,7 @@ balances
 balances >100
 balances <50
 txtbalances <relative-path>
+txtblockchain <relative-path>
 send <host:port> <json>
 clear
 quit
@@ -70,3 +71,19 @@ make 9000
 make 9001
 make 9002
 ```
+
+## Mining Tuning
+
+Mining can be tuned with environment variables:
+
+- `UNCCOIN_MINING_CPU_WORKERS`
+  Override the number of CPU workers used for proof of work.
+- `UNCCOIN_GPU_BATCH_SIZE`
+  Override the Metal GPU batch size. The best value depends on the machine.
+- `UNCCOIN_MINING_PROGRESS_INTERVAL`
+  Control how often mining progress is printed. Larger values reduce terminal overhead.
+- `UNCCOIN_DISABLE_MINING_AUTOTUNE`
+  Disable the local mining worker auto-tuner.
+
+When `UNCCOIN_MINING_CPU_WORKERS` is not set, UncCoin benchmarks a few local worker counts once and
+caches the fastest result in `state/mining_tuning.json`. This only affects local mining execution.

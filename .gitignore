@@ -8,6 +8,7 @@ state/msgs/*
 !state/msgs/.gitkeep
 state/aliases/*
 !state/aliases/.gitkeep
+state/mining_tuning.json
 scripts/run_auto.sh
 scripts/run_auto_parallel.sh
 

@@ -123,6 +123,7 @@ balance [address]
 balances
 balances >100
 balances <50
+txtblockchain <relative-path>
 clear
 quit
 ```

@@ -13,7 +13,7 @@ extern int pow_cancel_requested(void);
 #define SHA256_HEX_LENGTH 64
 #define SHA256_BINARY_LENGTH 32
 #define NONCE_BUFFER_LENGTH 32
-#define DEFAULT_GPU_BATCH_SIZE 16384
+#define DEFAULT_GPU_BATCH_SIZE 262144
 
 typedef struct {
     uint32_t state[8];
@@ -446,6 +446,8 @@ bool metal_mine_pow(
 
         while (true) {
             if (pow_cancel_requested()) {
+                *out_nonce = current_nonce;
+                out_hex[0] = '\0';
                 *out_cancelled = 1;
                 return true;
             }

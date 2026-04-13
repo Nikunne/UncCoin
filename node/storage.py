@@ -24,9 +24,8 @@ def blockchain_state_path(wallet_address: str) -> Path:
     return ensure_blockchains_dir() / f"{wallet_address}.json"
 
 
-def save_blockchain_state(wallet_address: str, blockchain: Blockchain) -> Path:
-    path = blockchain_state_path(wallet_address)
-    state = {
+def _blockchain_state_data(wallet_address: str, blockchain: Blockchain) -> dict:
+    return {
         "wallet_address": wallet_address,
         "difficulty_bits": blockchain.difficulty_bits,
         "genesis_difficulty_bits": blockchain.genesis_difficulty_bits,
@@ -40,8 +39,19 @@ def save_blockchain_state(wallet_address: str, blockchain: Blockchain) -> Path:
             for transaction in blockchain.pending_transactions
         ],
     }
-    path.write_text(json.dumps(state, indent=2), encoding="utf-8")
+
+
+def write_blockchain_state(path: Path, wallet_address: str, blockchain: Blockchain) -> Path:
+    path.write_text(
+        json.dumps(_blockchain_state_data(wallet_address, blockchain), indent=2),
+        encoding="utf-8",
+    )
     return path
+
+
+def save_blockchain_state(wallet_address: str, blockchain: Blockchain) -> Path:
+    path = blockchain_state_path(wallet_address)
+    return write_blockchain_state(path, wallet_address, blockchain)
 
 
 def load_blockchain_state(

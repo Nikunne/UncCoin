@@ -22,7 +22,7 @@ from core.utils.constants import MINING_REWARD_SENDER
 from node.alias_store import load_aliases, save_aliases
 from network.p2p_server import P2PServer
 from node.message_store import load_messages, save_messages
-from node.storage import load_blockchain_state, save_blockchain_state
+from node.storage import load_blockchain_state, save_blockchain_state, write_blockchain_state
 from wallet import Wallet
 
 
@@ -313,6 +313,7 @@ class Node:
             '"blockchain" to print the canonical chain, "balance [address]" to print a balance, '
             '"balances [>amount|<amount]" to print filtered balances, '
             '"txtbalances <relative-path>" to write balances to a text file, '
+            '"txtblockchain <relative-path>" to write blockchain state JSON to a file, '
             '"clear" to clear the screen, or "quit" to exit.'
         )
 
@@ -442,6 +443,16 @@ class Node:
                     print(f"Balances written to {path}")
                 except ValueError as error:
                     print(f"Invalid txtbalances command: {error}")
+                continue
+
+            if line.startswith("txtblockchain"):
+                try:
+                    path = self.write_blockchain_state_to_file(
+                        line[len("txtblockchain"):].strip()
+                    )
+                    print(f"Blockchain state written to {path}")
+                except ValueError as error:
+                    print(f"Invalid txtblockchain command: {error}")
                 continue
 
             if line.startswith("balance"):
@@ -754,23 +765,52 @@ class Node:
         return "\n".join(lines)
 
     def write_all_balances_to_file(self, relative_path: str) -> Path:
-        if not relative_path:
-            raise ValueError("Use txtbalances <relative-path>.")
-
-        output_path = Path(relative_path)
-        if output_path.is_absolute():
-            raise ValueError("txtbalances requires a relative path.")
-
-        resolved_path = (self.REPO_ROOT / output_path).resolve()
-        if not resolved_path.is_relative_to(self.REPO_ROOT.resolve()):
-            raise ValueError("txtbalances path must stay within the project root.")
+        resolved_path = self._resolve_repo_relative_output_path(
+            relative_path=relative_path,
+            command_name="txtbalances",
+        )
 
         resolved_path.parent.mkdir(parents=True, exist_ok=True)
         resolved_path.write_text(
             f"{self.format_all_balances()}\n",
             encoding="utf-8",
         )
-        return resolved_path.relative_to(self.REPO_ROOT)
+        return resolved_path.relative_to(self.REPO_ROOT.resolve())
+
+    def write_blockchain_state_to_file(self, relative_path: str) -> Path:
+        if self.wallet is None or self.blockchain is None:
+            raise ValueError("No wallet-backed blockchain is loaded.")
+
+        resolved_path = self._resolve_repo_relative_output_path(
+            relative_path=relative_path,
+            command_name="txtblockchain",
+        )
+        resolved_path.parent.mkdir(parents=True, exist_ok=True)
+        write_blockchain_state(
+            resolved_path,
+            self.wallet.address,
+            self.blockchain,
+        )
+        return resolved_path.relative_to(self.REPO_ROOT.resolve())
+
+    def _resolve_repo_relative_output_path(
+        self,
+        relative_path: str,
+        command_name: str,
+    ) -> Path:
+        if not relative_path:
+            raise ValueError(f"Use {command_name} <relative-path>.")
+
+        output_path = Path(relative_path)
+        if output_path.is_absolute():
+            raise ValueError(f"{command_name} requires a relative path.")
+
+        resolved_repo_root = self.REPO_ROOT.resolve()
+        resolved_path = (resolved_repo_root / output_path).resolve()
+        if not resolved_path.is_relative_to(resolved_repo_root):
+            raise ValueError(f"{command_name} path must stay within the project root.")
+
+        return resolved_path
 
     def self_peer_address(self) -> str:
         return f"{self.host}:{self.port}"

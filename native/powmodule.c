@@ -20,7 +20,7 @@
 #define SHA256_BINARY_LENGTH 32
 #define NONCE_BUFFER_LENGTH 32
 #define CANCEL_CHECK_INTERVAL 1024
-#define DEFAULT_GPU_BATCH_SIZE 16384
+#define DEFAULT_GPU_BATCH_SIZE 262144
 
 #if defined(_MSC_VER) && !defined(__clang__)
 static volatile LONG cancel_requested = 0;
@@ -509,6 +509,7 @@ static PyObject *mine_pow_gpu(PyObject *Py_UNUSED(self), PyObject *args) {
     char hex_digest[SHA256_HEX_LENGTH + 1];
     char error_message[256];
     int cancelled = 0;
+    bool success = false;
 
     if (!PyArg_ParseTuple(
             args,
@@ -524,19 +525,23 @@ static PyObject *mine_pow_gpu(PyObject *Py_UNUSED(self), PyObject *args) {
     }
 
 #ifdef __APPLE__
-    if (!metal_mine_pow(
-            prefix,
-            (size_t)prefix_length,
-            difficulty_bits,
-            start_nonce,
-            progress_interval,
-            batch_size,
-            nonce_step,
-            &nonce,
-            hex_digest,
-            &cancelled,
-            error_message,
-            sizeof(error_message))) {
+    Py_BEGIN_ALLOW_THREADS
+    success = metal_mine_pow(
+        prefix,
+        (size_t)prefix_length,
+        difficulty_bits,
+        start_nonce,
+        progress_interval,
+        batch_size,
+        nonce_step,
+        &nonce,
+        hex_digest,
+        &cancelled,
+        error_message,
+        sizeof(error_message));
+    Py_END_ALLOW_THREADS
+
+    if (!success) {
         PyErr_SetString(PyExc_RuntimeError, error_message);
         return NULL;
     }

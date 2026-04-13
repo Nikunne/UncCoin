@@ -3,6 +3,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable
 
+from config import DEFAULT_GPU_BATCH_SIZE, DEFAULT_MINING_PROGRESS_INTERVAL
+from core.mining_tuning import get_tuned_worker_count
 from core.native_pow import gpu_available as native_gpu_available
 from core.native_pow import mine_pow as native_mine_pow
 from core.native_pow import mine_pow_gpu as native_mine_pow_gpu
@@ -60,6 +62,21 @@ class ProofOfWorkCancelled(Exception):
     pass
 
 
+def _read_int_env(name: str, default: int, minimum: int = 0) -> int:
+    raw_value = os.environ.get(name)
+    if raw_value is None:
+        return default
+
+    try:
+        value = int(raw_value)
+    except ValueError:
+        return default
+
+    if value < minimum:
+        return default
+    return value
+
+
 def has_leading_zero_bits(block_hash: str, difficulty_bits: int) -> bool:
     binary_hash = bin(int(block_hash, 16))[2:].zfill(len(block_hash) * 4)
     return binary_hash.startswith("0" * difficulty_bits)
@@ -78,7 +95,7 @@ def proof_of_work(
     block: Block,
     difficulty_bits: int,
     progress_callback: Callable[[int], None] | None = None,
-    progress_interval: int = 10_000,
+    progress_interval: int = DEFAULT_MINING_PROGRESS_INTERVAL,
 ) -> str:
     if (
         block.hash_function.__module__ != "core.hashing"
@@ -87,10 +104,33 @@ def proof_of_work(
         raise ValueError("Native proof-of-work only supports core.hashing.sha256_block_hash.")
 
     prefix = serialize_block_prefix(block)
-    native_progress_interval = progress_interval if progress_callback is not None else 0
+    native_progress_interval = 0
+    if progress_callback is not None:
+        native_progress_interval = _read_int_env(
+            "UNCCOIN_MINING_PROGRESS_INTERVAL",
+            progress_interval,
+            minimum=0,
+        )
     reset_pow_cancel()
-    worker_count = max(1, os.cpu_count() or 1)
+    default_worker_count = max(1, os.cpu_count() or 1)
     gpu_enabled = native_gpu_available()
+    gpu_batch_size = _read_int_env(
+        "UNCCOIN_GPU_BATCH_SIZE",
+        DEFAULT_GPU_BATCH_SIZE,
+        minimum=1,
+    )
+    if os.environ.get("UNCCOIN_MINING_CPU_WORKERS") is not None:
+        worker_count = _read_int_env(
+            "UNCCOIN_MINING_CPU_WORKERS",
+            default_worker_count,
+            minimum=1,
+        )
+    else:
+        worker_count = get_tuned_worker_count(
+            default_worker_count,
+            gpu_enabled,
+            gpu_batch_size,
+        )
     total_partitions = worker_count + (1 if gpu_enabled else 0)
 
     def mine_gpu() -> tuple[int, str, bool]:
@@ -99,6 +139,7 @@ def proof_of_work(
             difficulty_bits,
             block.nonce + worker_count,
             0,
+            batch_size=gpu_batch_size,
             nonce_step=total_partitions,
         )
 
