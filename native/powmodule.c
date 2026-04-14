@@ -12,6 +12,25 @@
 #include <stdatomic.h>
 #endif
 
+#if defined(__clang__) && defined(__aarch64__)
+#include <arm_neon.h>
+#if defined(__APPLE__)
+#include <sys/sysctl.h>
+#elif defined(__linux__)
+#include <sys/auxv.h>
+#if defined(__has_include)
+#if __has_include(<asm/hwcap.h>)
+#include <asm/hwcap.h>
+#endif
+#endif
+#endif
+#define UNCCOIN_HAS_ARM_SHA2_INTRINSICS 1
+#define UNCCOIN_ARM_SHA2_TARGET __attribute__((target("sha2,neon")))
+#else
+#define UNCCOIN_HAS_ARM_SHA2_INTRINSICS 0
+#define UNCCOIN_ARM_SHA2_TARGET
+#endif
+
 #ifdef __APPLE__
 #include "powmetal.h"
 #endif
@@ -70,7 +89,9 @@ static const uint32_t SHA256_K[64] = {
 
 #define SHA256_RIGHT_ROTATE(value, bits) (((value) >> (bits)) | ((value) << (32U - (bits))))
 
-static void sha256_transform(sha256_context *context, const uint8_t data[64]) {
+static int cpu_sha256_acceleration_available = 0;
+
+static void sha256_transform_scalar(sha256_context *context, const uint8_t data[64]) {
     uint32_t schedule[64];
     uint32_t a, b, c, d, e, f, g, h;
 
@@ -130,6 +151,87 @@ static void sha256_transform(sha256_context *context, const uint8_t data[64]) {
     context->state[5] += f;
     context->state[6] += g;
     context->state[7] += h;
+}
+
+#if UNCCOIN_HAS_ARM_SHA2_INTRINSICS
+static int detect_cpu_sha256_acceleration(void) {
+#if defined(__APPLE__)
+    int available = 0;
+    size_t available_size = sizeof(available);
+
+    if (
+        sysctlbyname(
+            "hw.optional.arm.FEAT_SHA256",
+            &available,
+            &available_size,
+            NULL,
+            0
+        ) == 0
+        && available_size == sizeof(available)
+    ) {
+        return available != 0;
+    }
+
+    return 0;
+#elif defined(__linux__) && defined(HWCAP_SHA2)
+    return (getauxval(AT_HWCAP) & HWCAP_SHA2) != 0;
+#else
+    return 0;
+#endif
+}
+
+UNCCOIN_ARM_SHA2_TARGET
+static void sha256_transform_arm_sha2(sha256_context *context, const uint8_t data[64]) {
+    uint32x4_t abcd = vld1q_u32(context->state);
+    uint32x4_t efgh = vld1q_u32(context->state + 4);
+    uint32x4_t abcd_save = abcd;
+    uint32x4_t efgh_save = efgh;
+    uint32x4_t message_schedule[4];
+
+    message_schedule[0] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data)));
+    message_schedule[1] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data + 16)));
+    message_schedule[2] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data + 32)));
+    message_schedule[3] = vreinterpretq_u32_u8(vrev32q_u8(vld1q_u8(data + 48)));
+
+    /* Process rounds in 4-word groups and refresh the group that was just consumed. */
+    for (int round_group = 0; round_group < 16; round_group++) {
+        int schedule_index = round_group & 3;
+        uint32x4_t rounds = vaddq_u32(
+            message_schedule[schedule_index],
+            vld1q_u32(SHA256_K + (round_group * 4))
+        );
+        uint32x4_t abcd_previous = abcd;
+
+        abcd = vsha256hq_u32(abcd, efgh, rounds);
+        efgh = vsha256h2q_u32(efgh, abcd_previous, rounds);
+
+        if (round_group < 12) {
+            message_schedule[schedule_index] = vsha256su1q_u32(
+                vsha256su0q_u32(
+                    message_schedule[schedule_index],
+                    message_schedule[(schedule_index + 1) & 3]
+                ),
+                message_schedule[(schedule_index + 2) & 3],
+                message_schedule[(schedule_index + 3) & 3]
+            );
+        }
+    }
+
+    abcd = vaddq_u32(abcd, abcd_save);
+    efgh = vaddq_u32(efgh, efgh_save);
+    vst1q_u32(context->state, abcd);
+    vst1q_u32(context->state + 4, efgh);
+}
+#endif
+
+static void sha256_transform(sha256_context *context, const uint8_t data[64]) {
+#if UNCCOIN_HAS_ARM_SHA2_INTRINSICS
+    if (cpu_sha256_acceleration_available) {
+        sha256_transform_arm_sha2(context, data);
+        return;
+    }
+#endif
+    sha256_transform_scalar(context, data);
 }
 
 static void sha256_init(sha256_context *context) {
@@ -596,5 +698,8 @@ static struct PyModuleDef native_pow_module = {
 };
 
 PyMODINIT_FUNC PyInit_native_pow(void) {
+#if UNCCOIN_HAS_ARM_SHA2_INTRINSICS
+    cpu_sha256_acceleration_available = detect_cpu_sha256_acceleration();
+#endif
     return PyModule_Create(&native_pow_module);
 }
