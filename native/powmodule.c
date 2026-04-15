@@ -321,6 +321,32 @@ static int increment_ascii_decimal(
     return 0;
 }
 
+static int increment_ascii_decimal_one(
+    char buffer[NONCE_BUFFER_LENGTH],
+    int *length
+) {
+    int index = *length - 1;
+
+    while (index >= 0 && buffer[index] == '9') {
+        buffer[index] = '0';
+        index -= 1;
+    }
+
+    if (index >= 0) {
+        buffer[index] = (char)(buffer[index] + 1);
+        return index;
+    }
+
+    if (*length + 1 >= NONCE_BUFFER_LENGTH) {
+        return -1;
+    }
+
+    memmove(buffer + 1, buffer, (size_t)(*length));
+    buffer[0] = '1';
+    *length += 1;
+    return 0;
+}
+
 static void write_sha256_length(uint8_t block[64], uint64_t total_bit_length) {
     block[63] = (uint8_t)(total_bit_length);
     block[62] = (uint8_t)(total_bit_length >> 8);
@@ -386,7 +412,11 @@ static void prepare_nonce_blocks(
     }
 
     prepared->uses_second_block = 1;
-    prepared->first_block[total_suffix_offset] = 0x80;
+    if (total_suffix_offset < 64) {
+        prepared->first_block[total_suffix_offset] = 0x80;
+    } else {
+        prepared->second_block[0] = 0x80;
+    }
     write_sha256_length(prepared->second_block, total_bit_length);
 }
 
@@ -427,15 +457,12 @@ static void update_prepared_nonce_blocks(
     }
 }
 
-static void sha256_digest_prepared(
+static void sha256_digest_prepared_state(
     const sha256_context *prefix_context,
     const prepared_nonce_blocks *prepared,
-    uint8_t hash[SHA256_BINARY_LENGTH]
+    uint32_t state[8]
 ) {
     sha256_context context;
-    size_t index;
-
-    memset(&context, 0, sizeof(context));
     memcpy(context.state, prefix_context->state, sizeof(context.state));
 
     sha256_transform(&context, prepared->first_block);
@@ -443,24 +470,31 @@ static void sha256_digest_prepared(
         sha256_transform(&context, prepared->second_block);
     }
 
-    for (index = 0; index < 4; index++) {
-        hash[index]      = (uint8_t)((context.state[0] >> (24 - index * 8)) & 0xFF);
-        hash[index + 4]  = (uint8_t)((context.state[1] >> (24 - index * 8)) & 0xFF);
-        hash[index + 8]  = (uint8_t)((context.state[2] >> (24 - index * 8)) & 0xFF);
-        hash[index + 12] = (uint8_t)((context.state[3] >> (24 - index * 8)) & 0xFF);
-        hash[index + 16] = (uint8_t)((context.state[4] >> (24 - index * 8)) & 0xFF);
-        hash[index + 20] = (uint8_t)((context.state[5] >> (24 - index * 8)) & 0xFF);
-        hash[index + 24] = (uint8_t)((context.state[6] >> (24 - index * 8)) & 0xFF);
-        hash[index + 28] = (uint8_t)((context.state[7] >> (24 - index * 8)) & 0xFF);
+    memcpy(state, context.state, sizeof(context.state));
+}
+
+static void sha256_state_to_digest(
+    const uint32_t state[8],
+    uint8_t hash[SHA256_BINARY_LENGTH]
+) {
+    for (size_t index = 0; index < 4; index++) {
+        hash[index]      = (uint8_t)((state[0] >> (24 - index * 8)) & 0xFF);
+        hash[index + 4]  = (uint8_t)((state[1] >> (24 - index * 8)) & 0xFF);
+        hash[index + 8]  = (uint8_t)((state[2] >> (24 - index * 8)) & 0xFF);
+        hash[index + 12] = (uint8_t)((state[3] >> (24 - index * 8)) & 0xFF);
+        hash[index + 16] = (uint8_t)((state[4] >> (24 - index * 8)) & 0xFF);
+        hash[index + 20] = (uint8_t)((state[5] >> (24 - index * 8)) & 0xFF);
+        hash[index + 24] = (uint8_t)((state[6] >> (24 - index * 8)) & 0xFF);
+        hash[index + 28] = (uint8_t)((state[7] >> (24 - index * 8)) & 0xFF);
     }
 }
 
-static bool has_leading_zero_bits(const unsigned char *digest, int difficulty_bits) {
-    int full_zero_bytes = difficulty_bits / 8;
-    int remaining_bits = difficulty_bits % 8;
+static bool has_leading_zero_bits_state(const uint32_t state[8], int difficulty_bits) {
+    int full_zero_words = difficulty_bits / 32;
+    int remaining_bits = difficulty_bits % 32;
 
-    for (int index = 0; index < full_zero_bytes; index++) {
-        if (digest[index] != 0) {
+    for (int index = 0; index < full_zero_words; index++) {
+        if (state[index] != 0) {
             return false;
         }
     }
@@ -469,8 +503,10 @@ static bool has_leading_zero_bits(const unsigned char *digest, int difficulty_bi
         return true;
     }
 
-    unsigned char mask = (unsigned char)(0xFF << (8 - remaining_bits));
-    return (digest[full_zero_bytes] & mask) == 0;
+    return (
+        state[full_zero_words] &
+        (uint32_t)(0xFFFFFFFFU << (32 - remaining_bits))
+    ) == 0;
 }
 
 static void digest_to_hex(const unsigned char *digest, char *hex_output) {
@@ -486,6 +522,93 @@ static void digest_to_hex(const unsigned char *digest, char *hex_output) {
 
 int pow_cancel_requested(void) {
     return LOAD_CANCEL_REQUESTED();
+}
+
+typedef struct {
+    unsigned long long nonce;
+    unsigned long long attempts;
+    int found;
+    int cancelled;
+    int nonce_error;
+    unsigned char digest[SHA256_BINARY_LENGTH];
+} pow_search_result;
+
+static void search_pow_range(
+    const sha256_context *prefix_context,
+    int difficulty_bits,
+    unsigned long long start_nonce,
+    unsigned long long max_attempts,
+    unsigned long long progress_interval,
+    unsigned long long nonce_step,
+    pow_search_result *result
+) {
+    prepared_nonce_blocks prepared_blocks;
+    uint32_t digest_state[8];
+    char nonce_buffer[NONCE_BUFFER_LENGTH];
+    unsigned long long nonce = start_nonce;
+    unsigned long long attempts = 0;
+    int nonce_length = 0;
+    const int step_is_one = nonce_step == 1;
+
+    memset(result, 0, sizeof(*result));
+    memset(digest_state, 0, sizeof(digest_state));
+
+    nonce_length = u64_to_ascii(nonce, nonce_buffer);
+    prepare_nonce_blocks(prefix_context, nonce_buffer, nonce_length, &prepared_blocks);
+
+    while (max_attempts == 0 || attempts < max_attempts) {
+        if (
+            attempts % CANCEL_CHECK_INTERVAL == 0
+            && LOAD_CANCEL_REQUESTED()
+        ) {
+            result->cancelled = 1;
+            break;
+        }
+
+        sha256_digest_prepared_state(prefix_context, &prepared_blocks, digest_state);
+        attempts += 1;
+
+        if (has_leading_zero_bits_state(digest_state, difficulty_bits)) {
+            result->found = 1;
+            sha256_state_to_digest(digest_state, result->digest);
+            break;
+        }
+
+        if (max_attempts != 0 && attempts >= max_attempts) {
+            break;
+        }
+
+        int previous_nonce_length = nonce_length;
+        int changed_index = 0;
+        if (step_is_one) {
+            nonce += 1;
+            changed_index = increment_ascii_decimal_one(nonce_buffer, &nonce_length);
+        } else {
+            nonce += nonce_step;
+            changed_index = increment_ascii_decimal(
+                nonce_buffer,
+                &nonce_length,
+                nonce_step
+            );
+        }
+        if (changed_index < 0 || nonce_length >= NONCE_BUFFER_LENGTH) {
+            result->nonce_error = 1;
+            break;
+        }
+        if (nonce_length != previous_nonce_length) {
+            prepare_nonce_blocks(prefix_context, nonce_buffer, nonce_length, &prepared_blocks);
+        } else {
+            update_prepared_nonce_blocks(&prepared_blocks, nonce_buffer, changed_index);
+        }
+
+        if (progress_interval > 0 && attempts > 0 && attempts % progress_interval == 0) {
+            printf("\rTried %llu nonces...", nonce);
+            fflush(stdout);
+        }
+    }
+
+    result->attempts = attempts;
+    result->nonce = nonce;
 }
 
 static PyObject *mine_pow(PyObject *Py_UNUSED(self), PyObject *args) {
@@ -518,66 +641,110 @@ static PyObject *mine_pow(PyObject *Py_UNUSED(self), PyObject *args) {
     }
 
     sha256_context prefix_context;
-    prepared_nonce_blocks prepared_blocks;
-    unsigned char digest[SHA256_BINARY_LENGTH];
     char hex_digest[SHA256_HEX_LENGTH + 1];
-    char nonce_buffer[NONCE_BUFFER_LENGTH];
-    unsigned long long nonce = start_nonce;
-    unsigned long long attempts = 0;
-    int nonce_error = 0;
-    int cancelled = 0;
-    int nonce_length = 0;
+    pow_search_result result;
 
     sha256_init(&prefix_context);
     sha256_update(&prefix_context, (const uint8_t *)prefix, (size_t)prefix_length);
-    nonce_length = u64_to_ascii(nonce, nonce_buffer);
-    prepare_nonce_blocks(&prefix_context, nonce_buffer, nonce_length, &prepared_blocks);
 
     Py_BEGIN_ALLOW_THREADS
-    while (true) {
-        if (
-            attempts % CANCEL_CHECK_INTERVAL == 0
-            && LOAD_CANCEL_REQUESTED()
-        ) {
-            cancelled = 1;
-            break;
-        }
-
-        sha256_digest_prepared(&prefix_context, &prepared_blocks, digest);
-
-        if (has_leading_zero_bits(digest, difficulty_bits)) {
-            break;
-        }
-
-        attempts += 1;
-        nonce += nonce_step;
-        int previous_nonce_length = nonce_length;
-        int changed_index = increment_ascii_decimal(nonce_buffer, &nonce_length, nonce_step);
-        if (changed_index < 0 || nonce_length >= NONCE_BUFFER_LENGTH) {
-            nonce_error = 1;
-            break;
-        }
-        if (nonce_length != previous_nonce_length) {
-            prepare_nonce_blocks(&prefix_context, nonce_buffer, nonce_length, &prepared_blocks);
-        } else {
-            update_prepared_nonce_blocks(&prepared_blocks, nonce_buffer, changed_index);
-        }
-
-        if (progress_interval > 0 && attempts > 0 && attempts % progress_interval == 0) {
-            printf("\rTried %llu nonces...", nonce);
-            fflush(stdout);
-        }
-    }
+    search_pow_range(
+        &prefix_context,
+        difficulty_bits,
+        start_nonce,
+        0,
+        progress_interval,
+        nonce_step,
+        &result
+    );
     Py_END_ALLOW_THREADS
 
-    if (nonce_error) {
+    if (result.nonce_error) {
         PyErr_SetString(PyExc_RuntimeError, "Failed to serialize nonce.");
         return NULL;
     }
 
-    digest_to_hex(digest, hex_digest);
+    if (result.found) {
+        digest_to_hex(result.digest, hex_digest);
+    } else {
+        hex_digest[0] = '\0';
+    }
 
-    return Py_BuildValue("Ksi", nonce, hex_digest, cancelled);
+    return Py_BuildValue("Ksi", result.nonce, hex_digest, result.cancelled);
+}
+
+static PyObject *mine_pow_chunk(PyObject *Py_UNUSED(self), PyObject *args) {
+    const char *prefix = NULL;
+    Py_ssize_t prefix_length = 0;
+    int difficulty_bits = 0;
+    unsigned long long start_nonce = 0;
+    unsigned long long max_attempts = 0;
+    unsigned long long progress_interval = 0;
+    unsigned long long nonce_step = 1;
+    sha256_context prefix_context;
+    char hex_digest[SHA256_HEX_LENGTH + 1];
+    pow_search_result result;
+
+    if (!PyArg_ParseTuple(
+            args,
+            "s#iKK|KK",
+            &prefix,
+            &prefix_length,
+            &difficulty_bits,
+            &start_nonce,
+            &max_attempts,
+            &progress_interval,
+            &nonce_step)) {
+        return NULL;
+    }
+
+    if (difficulty_bits < 0 || difficulty_bits > 256) {
+        PyErr_SetString(PyExc_ValueError, "difficulty_bits must be between 0 and 256.");
+        return NULL;
+    }
+    if (max_attempts == 0) {
+        PyErr_SetString(PyExc_ValueError, "max_attempts must be at least 1.");
+        return NULL;
+    }
+    if (nonce_step == 0) {
+        PyErr_SetString(PyExc_ValueError, "nonce_step must be at least 1.");
+        return NULL;
+    }
+
+    sha256_init(&prefix_context);
+    sha256_update(&prefix_context, (const uint8_t *)prefix, (size_t)prefix_length);
+
+    Py_BEGIN_ALLOW_THREADS
+    search_pow_range(
+        &prefix_context,
+        difficulty_bits,
+        start_nonce,
+        max_attempts,
+        progress_interval,
+        nonce_step,
+        &result
+    );
+    Py_END_ALLOW_THREADS
+
+    if (result.nonce_error) {
+        PyErr_SetString(PyExc_RuntimeError, "Failed to serialize nonce.");
+        return NULL;
+    }
+
+    if (result.found) {
+        digest_to_hex(result.digest, hex_digest);
+    } else {
+        hex_digest[0] = '\0';
+    }
+
+    return Py_BuildValue(
+        "KsiiK",
+        result.nonce,
+        hex_digest,
+        result.found,
+        result.cancelled,
+        result.attempts
+    );
 }
 
 static PyObject *request_cancel(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args)) {
@@ -599,6 +766,23 @@ static PyObject *gpu_available(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(ar
     Py_RETURN_FALSE;
 }
 
+static PyObject *gpu_properties(PyObject *Py_UNUSED(self), PyObject *Py_UNUSED(args)) {
+#ifdef __APPLE__
+    unsigned int thread_execution_width = 0;
+    unsigned int max_threads_per_threadgroup = 0;
+
+    if (
+        metal_pow_gpu_properties(
+            &thread_execution_width,
+            &max_threads_per_threadgroup
+        )
+    ) {
+        return Py_BuildValue("II", thread_execution_width, max_threads_per_threadgroup);
+    }
+#endif
+    Py_RETURN_NONE;
+}
+
 static PyObject *mine_pow_gpu(PyObject *Py_UNUSED(self), PyObject *args) {
     const char *prefix = NULL;
     Py_ssize_t prefix_length = 0;
@@ -607,6 +791,8 @@ static PyObject *mine_pow_gpu(PyObject *Py_UNUSED(self), PyObject *args) {
     unsigned long long progress_interval = 0;
     unsigned long long batch_size = DEFAULT_GPU_BATCH_SIZE;
     unsigned long long nonce_step = 1;
+    unsigned long long nonces_per_thread = 0;
+    unsigned long long threads_per_group = 0;
     unsigned long long nonce = 0;
     char hex_digest[SHA256_HEX_LENGTH + 1];
     char error_message[256];
@@ -615,14 +801,16 @@ static PyObject *mine_pow_gpu(PyObject *Py_UNUSED(self), PyObject *args) {
 
     if (!PyArg_ParseTuple(
             args,
-            "s#i|KKKK",
+            "s#i|KKKKKK",
             &prefix,
             &prefix_length,
             &difficulty_bits,
             &start_nonce,
             &progress_interval,
             &batch_size,
-            &nonce_step)) {
+            &nonce_step,
+            &nonces_per_thread,
+            &threads_per_group)) {
         return NULL;
     }
 
@@ -636,6 +824,8 @@ static PyObject *mine_pow_gpu(PyObject *Py_UNUSED(self), PyObject *args) {
         progress_interval,
         batch_size,
         nonce_step,
+        nonces_per_thread,
+        threads_per_group,
         &nonce,
         hex_digest,
         &cancelled,
@@ -655,12 +845,98 @@ static PyObject *mine_pow_gpu(PyObject *Py_UNUSED(self), PyObject *args) {
 #endif
 }
 
+static PyObject *mine_pow_gpu_chunk(PyObject *Py_UNUSED(self), PyObject *args) {
+    const char *prefix = NULL;
+    Py_ssize_t prefix_length = 0;
+    int difficulty_bits = 0;
+    unsigned long long start_nonce = 0;
+    unsigned long long max_attempts = 0;
+    unsigned long long nonce_step = 1;
+    unsigned long long nonces_per_thread = 0;
+    unsigned long long threads_per_group = 0;
+    unsigned long long batch_size = 0;
+    unsigned long long nonce = 0;
+    unsigned long long attempts = 0;
+    char hex_digest[SHA256_HEX_LENGTH + 1];
+    char error_message[256];
+    int found = 0;
+    int cancelled = 0;
+    bool success = false;
+
+    if (!PyArg_ParseTuple(
+            args,
+            "s#iKK|KKKK",
+            &prefix,
+            &prefix_length,
+            &difficulty_bits,
+            &start_nonce,
+            &max_attempts,
+            &nonce_step,
+            &nonces_per_thread,
+            &threads_per_group,
+            &batch_size)) {
+        return NULL;
+    }
+
+    if (difficulty_bits < 0 || difficulty_bits > 256) {
+        PyErr_SetString(PyExc_ValueError, "difficulty_bits must be between 0 and 256.");
+        return NULL;
+    }
+    if (max_attempts == 0) {
+        PyErr_SetString(PyExc_ValueError, "max_attempts must be at least 1.");
+        return NULL;
+    }
+    if (nonce_step == 0) {
+        PyErr_SetString(PyExc_ValueError, "nonce_step must be at least 1.");
+        return NULL;
+    }
+
+#ifdef __APPLE__
+    Py_BEGIN_ALLOW_THREADS
+    success = metal_mine_pow_range(
+        prefix,
+        (size_t)prefix_length,
+        difficulty_bits,
+        start_nonce,
+        max_attempts,
+        0,
+        batch_size == 0 ? max_attempts : batch_size,
+        nonce_step,
+        nonces_per_thread,
+        threads_per_group,
+        &nonce,
+        hex_digest,
+        &attempts,
+        &found,
+        &cancelled,
+        error_message,
+        sizeof(error_message));
+    Py_END_ALLOW_THREADS
+
+    if (!success) {
+        PyErr_SetString(PyExc_RuntimeError, error_message);
+        return NULL;
+    }
+
+    return Py_BuildValue("KsiiK", nonce, hex_digest, found, cancelled, attempts);
+#else
+    PyErr_SetString(PyExc_RuntimeError, "GPU proof-of-work is only supported on macOS Metal.");
+    return NULL;
+#endif
+}
+
 static PyMethodDef NativePowMethods[] = {
     {
         "mine_pow",
         mine_pow,
         METH_VARARGS,
         "Run proof of work and return the winning nonce and SHA-256 hash."
+    },
+    {
+        "mine_pow_chunk",
+        mine_pow_chunk,
+        METH_VARARGS,
+        "Run proof of work for a bounded nonce range."
     },
     {
         "request_cancel",
@@ -681,10 +957,22 @@ static PyMethodDef NativePowMethods[] = {
         "Return whether the Metal proof-of-work backend is available."
     },
     {
+        "gpu_properties",
+        gpu_properties,
+        METH_NOARGS,
+        "Return the Metal pipeline thread execution width and max threads per threadgroup."
+    },
+    {
         "mine_pow_gpu",
         mine_pow_gpu,
         METH_VARARGS,
         "Run proof of work on the GPU and return the winning nonce and SHA-256 hash."
+    },
+    {
+        "mine_pow_gpu_chunk",
+        mine_pow_gpu_chunk,
+        METH_VARARGS,
+        "Run GPU proof of work for a bounded nonce range."
     },
     {NULL, NULL, 0, NULL}
 };

@@ -1,15 +1,15 @@
 import os
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable
 
 from config import DEFAULT_GPU_BATCH_SIZE, DEFAULT_MINING_PROGRESS_INTERVAL
+from core.mining_tuning import get_tuned_gpu_chunk_multiplier
+from core.mining_tuning import get_tuned_gpu_launch_config
+from core.mining_tuning import get_tuned_gpu_worker_count
 from core.mining_tuning import get_tuned_worker_count
+from core.mining_scheduler import get_cpu_chunk_size
+from core.mining_scheduler import run_chunked_mining
 from core.native_pow import gpu_available as native_gpu_available
-from core.native_pow import mine_pow as native_mine_pow
-from core.native_pow import mine_pow_gpu as native_mine_pow_gpu
-from core.native_pow import request_pow_cancel
-from core.native_pow import reset_pow_cancel
 from core.serialization import serialize_block_prefix
 from core.transaction import Transaction
 
@@ -111,7 +111,6 @@ def proof_of_work(
             progress_interval,
             minimum=0,
         )
-    reset_pow_cancel()
     default_worker_count = max(1, os.cpu_count() or 1)
     gpu_enabled = native_gpu_available()
     gpu_batch_size = _read_int_env(
@@ -119,6 +118,41 @@ def proof_of_work(
         DEFAULT_GPU_BATCH_SIZE,
         minimum=1,
     )
+    if gpu_enabled:
+        default_gpu_nonces_per_thread, default_gpu_threads_per_group = (
+            get_tuned_gpu_launch_config(gpu_batch_size)
+        )
+    else:
+        default_gpu_nonces_per_thread, default_gpu_threads_per_group = (0, 0)
+    gpu_nonces_per_thread = _read_int_env(
+        "UNCCOIN_GPU_NONCES_PER_THREAD",
+        default_gpu_nonces_per_thread,
+        minimum=1,
+    ) if gpu_enabled else 0
+    gpu_threads_per_group = _read_int_env(
+        "UNCCOIN_GPU_THREADS_PER_GROUP",
+        default_gpu_threads_per_group,
+        minimum=1,
+    ) if gpu_enabled else 0
+    gpu_chunk_multiplier = _read_int_env(
+        "UNCCOIN_GPU_CHUNK_MULTIPLIER",
+        get_tuned_gpu_chunk_multiplier(
+            gpu_batch_size,
+            gpu_nonces_per_thread,
+            gpu_threads_per_group,
+        ) if gpu_enabled else 1,
+        minimum=1,
+    ) if gpu_enabled else 1
+    gpu_worker_count = _read_int_env(
+        "UNCCOIN_GPU_WORKERS",
+        get_tuned_gpu_worker_count(
+            gpu_batch_size,
+            gpu_nonces_per_thread,
+            gpu_threads_per_group,
+            gpu_chunk_multiplier,
+        ) if gpu_enabled else 1,
+        minimum=1,
+    ) if gpu_enabled else 0
     if os.environ.get("UNCCOIN_MINING_CPU_WORKERS") is not None:
         worker_count = _read_int_env(
             "UNCCOIN_MINING_CPU_WORKERS",
@@ -130,73 +164,32 @@ def proof_of_work(
             default_worker_count,
             gpu_enabled,
             gpu_batch_size,
+            gpu_nonces_per_thread,
+            gpu_threads_per_group,
+            gpu_chunk_multiplier,
+            gpu_worker_count,
         )
-    total_partitions = worker_count + (1 if gpu_enabled else 0)
+    mining_result = run_chunked_mining(
+        prefix,
+        difficulty_bits,
+        block.nonce,
+        worker_count,
+        get_cpu_chunk_size(),
+        gpu_enabled,
+        gpu_batch_size,
+        gpu_nonces_per_thread,
+        gpu_threads_per_group,
+        gpu_chunk_multiplier,
+        gpu_worker_count,
+        native_progress_interval,
+        progress_callback,
+        tolerate_gpu_failure=True,
+    )
 
-    def mine_gpu() -> tuple[int, str, bool]:
-        return native_mine_pow_gpu(
-            prefix,
-            difficulty_bits,
-            block.nonce + worker_count,
-            0,
-            batch_size=gpu_batch_size,
-            nonce_step=total_partitions,
-        )
-
-    def mine_range(worker_index: int) -> tuple[int, str, bool]:
-        worker_progress_interval = 0
-        if native_progress_interval > 0 and worker_index == 0:
-            worker_progress_interval = native_progress_interval * total_partitions
-        return native_mine_pow(
-            prefix,
-            difficulty_bits,
-            block.nonce + worker_index,
-            worker_progress_interval,
-            total_partitions,
-        )
-
-    winner: tuple[int, str] | None = None
-    cancelled_workers = 0
-    gpu_failed = False
-
-    with ThreadPoolExecutor(max_workers=worker_count + (1 if gpu_enabled else 0)) as executor:
-        future_labels = {
-            executor.submit(mine_range, worker_index): "cpu"
-            for worker_index in range(worker_count)
-        }
-        if gpu_enabled:
-            future_labels[executor.submit(mine_gpu)] = "gpu"
-
-        try:
-            for future in as_completed(future_labels):
-                try:
-                    nonce, block_hash, cancelled = future.result()
-                except RuntimeError:
-                    if future_labels[future] == "gpu":
-                        gpu_failed = True
-                        continue
-                    raise
-                if cancelled:
-                    cancelled_workers += 1
-                    continue
-
-                winner = (nonce, block_hash)
-                request_pow_cancel()
-                break
-        finally:
-            request_pow_cancel()
-            for future, label in future_labels.items():
-                try:
-                    future.result()
-                except RuntimeError:
-                    if label != "gpu":
-                        raise
-
-    expected_cancelled = worker_count + (0 if gpu_failed or not gpu_enabled else 1)
-    if winner is None or cancelled_workers == expected_cancelled:
+    if mining_result.winner is None:
         raise ProofOfWorkCancelled("Proof of work was cancelled.")
 
-    block.nonce, block.block_hash = winner
+    block.nonce, block.block_hash = mining_result.winner
 
     return block.block_hash
 
