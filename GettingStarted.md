@@ -32,6 +32,16 @@ Force a rebuild if needed:
 ./scripts/build_native_pow.sh --force
 ```
 
+On Linux and WSL, GPU mining uses OpenCL instead of Metal. The CPU extension still needs to build, and the OpenCL
+runtime must be visible inside the distro. For Ubuntu-based WSL setups:
+
+```bash
+sudo apt install ocl-icd-libopencl1 clinfo
+clinfo
+```
+
+If `clinfo` reports a GPU device, `automine` will use it automatically.
+
 ## 3. Create a Wallet
 
 Each user should create their own wallet:

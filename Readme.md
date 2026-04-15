@@ -79,11 +79,26 @@ Mining can be tuned with environment variables:
 - `UNCCOIN_MINING_CPU_WORKERS`
   Override the number of CPU workers used for proof of work.
 - `UNCCOIN_GPU_BATCH_SIZE`
-  Override the Metal GPU batch size. The best value depends on the machine.
+  Override the GPU batch size. On macOS this tunes the Metal backend; on Linux/WSL it tunes the OpenCL backend.
 - `UNCCOIN_MINING_PROGRESS_INTERVAL`
   Control how often mining progress is printed. Larger values reduce terminal overhead.
 - `UNCCOIN_DISABLE_MINING_AUTOTUNE`
   Disable the local mining worker auto-tuner.
+- `UNCCOIN_DISABLE_OPENCL_GPU`
+  Force Linux/WSL mining to stay on CPU even if an OpenCL runtime is available.
 
 When `UNCCOIN_MINING_CPU_WORKERS` is not set, UncCoin benchmarks a few local worker counts once and
 caches the fastest result in `state/mining_tuning.json`. This only affects local mining execution.
+
+## WSL GPU Mining
+
+On macOS, GPU mining uses Metal. On Linux and WSL, UncCoin uses OpenCL when an OpenCL GPU runtime is available.
+
+For Ubuntu-based WSL installs, the usual minimum is:
+
+```bash
+sudo apt install ocl-icd-libopencl1 clinfo
+clinfo
+```
+
+If `clinfo` can see your GPU from inside WSL, `mine` and `automine` will use it automatically.
